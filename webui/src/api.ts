@@ -1,3 +1,5 @@
+import { t } from './i18n'
+
 export interface Account {
   name: string
   user_id: string
@@ -101,7 +103,7 @@ function withApiKey(init?: RequestInit): RequestInit {
 export async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const first = await globalThis.fetch(input, withApiKey(init))
   if (first.status !== 401) return first
-  const entered = prompt('请输入网关 API Key')
+  const entered = prompt(t('请输入网关 API Key', 'Enter the gateway API key'))
   if (entered == null || entered.trim() === '') return first
   localStorage.setItem(API_KEY_STORAGE, entered.trim())
   return globalThis.fetch(input, withApiKey(init))
@@ -185,7 +187,7 @@ export async function completeLogin(url: string): Promise<{ status: string; name
     let message = `${r.status}`
     try {
       const data = await r.json()
-      if (data?.error) message = data.detail ? `${data.error}：${data.detail}` : data.error
+      if (data?.error) message = data.detail ? t(`${data.error}：${data.detail}`, `${data.error}: ${data.detail}`) : data.error
     } catch {
       // 非 JSON 错误体（如网关 502）只报状态码。
     }

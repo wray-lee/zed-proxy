@@ -1,6 +1,7 @@
 import './style.css'
 import { authFetch } from './api'
 import { icons } from './icons'
+import { lang, locale, setLang, t } from './i18n'
 import { renderAccounts } from './pages/accounts'
 import { renderEndpoints } from './pages/endpoints'
 import { renderHealth } from './pages/health'
@@ -9,14 +10,20 @@ import { renderIntegration } from './pages/integration'
 type PageId = 'accounts' | 'health' | 'endpoints' | 'integration'
 
 const PAGE_TITLES: Record<PageId, string> = {
-  accounts: '账号中心',
-  health: '服务检查',
-  endpoints: '接口清单',
-  integration: '客户端接入',
+  accounts: t('账号中心', 'Account center'),
+  health: t('服务检查', 'Health check'),
+  endpoints: t('接口清单', 'Endpoints'),
+  integration: t('客户端接入', 'Client setup'),
 }
 
 const app = document.getElementById('app')!
 const port = location.port || '8001'
+
+document.title = t('ZedProxy 控制台', 'ZedProxy Console')
+document.querySelector('meta[name="description"]')?.setAttribute(
+  'content',
+  t('ZedProxy 本地模型网关控制台', 'ZedProxy local model gateway console'),
+)
 
 app.innerHTML = `
   <div class="app-shell">
@@ -25,63 +32,67 @@ app.innerHTML = `
         <div class="brand-mark">${icons.zap}</div>
         <div>
           <strong>ZedProxy</strong>
-          <span>本地模型接入控制台</span>
+          <span>${t('本地模型接入控制台', 'Local model gateway console')}</span>
         </div>
       </div>
 
       <div class="service-overview" id="service-overview">
         <div class="service-overview-head">
           <span class="live-dot checking" id="service-dot"></span>
-          <span id="service-label">正在检查服务</span>
+          <span id="service-label">${t('正在检查服务', 'Checking service')}</span>
         </div>
         <div class="service-overview-meta">
           <span>127.0.0.1:${port}</span>
-          <span id="model-count">-- 个模型</span>
+          <span id="model-count">${t('-- 个模型', '-- models')}</span>
         </div>
       </div>
 
-      <nav class="primary-nav" aria-label="主导航">
+      <nav class="primary-nav" aria-label="${t('主导航', 'Main navigation')}">
         <section class="nav-section">
-          <p>运行管理</p>
+          <p>${t('运行管理', 'Operations')}</p>
           <button class="nav-item active" data-page="accounts" type="button">
             <span class="nav-icon">${icons.users}</span>
-            <span>账号中心</span>
+            <span>${t('账号中心', 'Account center')}</span>
             <span class="nav-badge" id="acc-count">0</span>
           </button>
           <button class="nav-item" data-page="health" type="button">
             <span class="nav-icon">${icons.activity}</span>
-            <span>服务检查</span>
+            <span>${t('服务检查', 'Health check')}</span>
           </button>
         </section>
 
         <section class="nav-section">
-          <p>开发接入</p>
+          <p>${t('开发接入', 'Development')}</p>
           <button class="nav-item" data-page="endpoints" type="button">
             <span class="nav-icon">${icons.globe}</span>
-            <span>接口清单</span>
+            <span>${t('接口清单', 'Endpoints')}</span>
           </button>
           <button class="nav-item" data-page="integration" type="button">
             <span class="nav-icon">${icons.code}</span>
-            <span>客户端接入</span>
+            <span>${t('客户端接入', 'Client setup')}</span>
           </button>
         </section>
       </nav>
 
       <footer class="side-footer">
         <div>${icons.shield}</div>
-        <p><strong>仅监听本机地址</strong><span>账号凭据不会发送到前端页面</span></p>
+        <p><strong>${t('仅监听本机地址', 'Listening on localhost only')}</strong><span>${t('账号凭据不会发送到前端页面', 'Credentials are never sent to the browser')}</span></p>
       </footer>
     </aside>
 
     <section class="workspace">
       <header class="topbar">
         <div>
-          <span class="topbar-kicker">控制台 / <span id="current-page-name">账号中心</span></span>
-          <strong id="topbar-title">账号中心</strong>
+          <span class="topbar-kicker">${t('控制台', 'Console')} / <span id="current-page-name">${PAGE_TITLES.accounts}</span></span>
+          <strong id="topbar-title">${PAGE_TITLES.accounts}</strong>
         </div>
         <div class="topbar-status">
           <span class="topbar-clock" id="local-clock"></span>
-          <span class="runtime-chip">${icons.server} 服务端口 ${port}</span>
+          <span class="runtime-chip">${icons.server} ${t('服务端口', 'Service port')} ${port}</span>
+          <div class="lang-switch" role="group" aria-label="${t('语言', 'Language')}">
+            <button class="lang-button${lang === 'zh' ? ' active' : ''}" type="button" data-lang="zh" lang="zh-CN" aria-pressed="${lang === 'zh'}"${lang === 'zh' ? ' aria-current="true"' : ''}>中文</button>
+            <button class="lang-button${lang === 'en' ? ' active' : ''}" type="button" data-lang="en" lang="en" aria-pressed="${lang === 'en'}"${lang === 'en' ? ' aria-current="true"' : ''}>EN</button>
+          </div>
         </div>
       </header>
 
@@ -115,7 +126,7 @@ function activatePage(pageId: PageId, updateHash = true) {
   const title = PAGE_TITLES[pageId]
   document.getElementById('current-page-name')!.textContent = title
   document.getElementById('topbar-title')!.textContent = title
-  document.title = `${title} · ZedProxy`
+  document.title = t(`${title} · ZedProxy`, `${title} · ZedProxy Console`)
   if (updateHash) history.replaceState(null, '', `#${pageId}`)
 }
 
@@ -126,13 +137,20 @@ document.querySelectorAll<HTMLButtonElement>('.nav-item[data-page]').forEach(but
   })
 })
 
+document.querySelectorAll<HTMLButtonElement>('.lang-button').forEach(button => {
+  button.addEventListener('click', () => {
+    const next = button.dataset.lang
+    if ((next === 'zh' || next === 'en') && next !== lang) setLang(next)
+  })
+})
+
 window.addEventListener('hashchange', () => {
   const pageId = location.hash.slice(1)
   if (isPageId(pageId)) activatePage(pageId, false)
 })
 
 function updateClock() {
-  document.getElementById('local-clock')!.textContent = new Intl.DateTimeFormat('zh-CN', {
+  document.getElementById('local-clock')!.textContent = new Intl.DateTimeFormat(locale, {
     month: '2-digit',
     day: '2-digit',
     hour: '2-digit',
@@ -147,19 +165,20 @@ async function refreshServiceState() {
   const label = document.getElementById('service-label')!
   const count = document.getElementById('model-count')!
   dot.className = 'live-dot checking'
-  label.textContent = '正在检查服务'
+  label.textContent = t('正在检查服务', 'Checking service')
 
   try {
     const response = await authFetch('/v1/models', { cache: 'no-store' })
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const data = await response.json() as { data?: unknown[] }
+    const modelCount = data.data?.length ?? 0
     dot.className = 'live-dot online'
-    label.textContent = '本地服务运行中'
-    count.textContent = `${data.data?.length ?? 0} 个模型`
+    label.textContent = t('本地服务运行中', 'Local service running')
+    count.textContent = t(`${modelCount} 个模型`, `${modelCount} ${modelCount === 1 ? 'model' : 'models'}`)
   } catch {
     dot.className = 'live-dot offline'
-    label.textContent = '本地服务未响应'
-    count.textContent = '连接失败'
+    label.textContent = t('本地服务未响应', 'Local service not responding')
+    count.textContent = t('连接失败', 'Connection failed')
   }
 }
 

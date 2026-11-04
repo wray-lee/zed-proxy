@@ -9,6 +9,7 @@ import {
   type AccountHealthResult,
   type AccountQuotaStatus,
 } from '../api'
+import { locale, t } from '../i18n'
 import { icons } from '../icons'
 import { showToast } from '../toast'
 
@@ -26,28 +27,31 @@ function escapeHtml(value: string): string {
 }
 
 function formatPlan(plan?: string): string {
-  if (!plan || plan === 'unknown') return '套餐未公开'
+  if (!plan || plan === 'unknown') return t('套餐未公开', 'Plan not disclosed')
   return plan.replace(/^zed_/, 'Zed ').replaceAll('_', ' ')
 }
 
 function formatDate(value?: string | null): string {
-  if (!value) return '未公开'
+  if (!value) return t('未公开', 'Not disclosed')
   const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return '未公开'
-  return date.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })
+  if (Number.isNaN(date.getTime())) return t('未公开', 'Not disclosed')
+  return date.toLocaleDateString(locale, { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
 function formatCheckedAt(value?: number): string {
-  if (!value) return '尚未检测'
-  return new Date(value * 1000).toLocaleString('zh-CN', { hour12: false })
+  if (!value) return t('尚未检测', 'Not checked yet')
+  return new Date(value * 1000).toLocaleString(locale, { hour12: false })
 }
 
 function quotaPresentation(status: AccountQuotaStatus | undefined) {
+  const unknown = t('未知', 'unknown')
   if (!status) {
     return {
       className: refreshingAccountData ? 'checking' : 'unchecked',
-      label: refreshingAccountData ? '正在读取' : '尚未检查',
-      detail: refreshingAccountData ? '正在读取令牌和账单信息' : '刷新账号数据后显示令牌与额度状态',
+      label: refreshingAccountData ? t('正在读取', 'Reading') : t('尚未检查', 'Not checked'),
+      detail: refreshingAccountData
+        ? t('正在读取令牌和账单信息', 'Reading token and billing details')
+        : t('刷新账号数据后显示令牌与额度状态', 'Refresh account data to see token and quota status'),
     }
   }
 
@@ -55,38 +59,47 @@ function quotaPresentation(status: AccountQuotaStatus | undefined) {
     case 'available':
       return {
         className: 'available',
-        label: '额度可用',
-        detail: `已用 ${status.used ?? 0} / ${status.limit ?? '未知'}，剩余 ${status.remaining ?? '未知'}`,
+        label: t('额度可用', 'Quota available'),
+        detail: t(
+          `已用 ${status.used ?? 0} / ${status.limit ?? unknown}，剩余 ${status.remaining ?? unknown}`,
+          `Used ${status.used ?? 0} / ${status.limit ?? unknown}, ${status.remaining ?? unknown} left`,
+        ),
       }
     case 'exhausted':
       return {
         className: 'unavailable',
-        label: '额度已用尽',
-        detail: `已用 ${status.used ?? status.limit ?? '未知'} / ${status.limit ?? '未知'}`,
+        label: t('额度已用尽', 'Quota exhausted'),
+        detail: t(
+          `已用 ${status.used ?? status.limit ?? unknown} / ${status.limit ?? unknown}`,
+          `Used ${status.used ?? status.limit ?? unknown} / ${status.limit ?? unknown}`,
+        ),
       }
     case 'unmetered':
       return {
         className: 'available',
-        label: '令牌可用',
-        detail: '令牌有效；当前套餐没有通过接口公开数值额度',
+        label: t('令牌可用', 'Token valid'),
+        detail: t(
+          '令牌有效；当前套餐没有通过接口公开数值额度',
+          'Token valid; this plan does not expose numeric quota through the API',
+        ),
       }
     case 'restricted':
       return {
         className: 'unavailable',
-        label: '账号受限',
-        detail: 'Zed 当前未向该账号开放模型访问',
+        label: t('账号受限', 'Account restricted'),
+        detail: t('Zed 当前未向该账号开放模型访问', 'Zed has not granted model access to this account'),
       }
     case 'unknown':
       return {
         className: 'warning',
-        label: '额度未知',
-        detail: '令牌有效，但账单信息暂时没有返回',
+        label: t('额度未知', 'Quota unknown'),
+        detail: t('令牌有效，但账单信息暂时没有返回', 'Token valid, but billing details are not available yet'),
       }
     default:
       return {
         className: 'unavailable',
-        label: '令牌不可用',
-        detail: 'LLM 令牌刷新失败，请重新登录该账号',
+        label: t('令牌不可用', 'Token unavailable'),
+        detail: t('LLM 令牌刷新失败，请重新登录该账号', 'LLM token refresh failed; sign in to this account again'),
       }
   }
 }
@@ -96,41 +109,50 @@ function healthPresentation(status: AccountQuotaStatus | undefined, accountName:
   if (checking) {
     return {
       className: 'checking',
-      label: '正在实测',
-      detail: '仅使用 gpt-5.6-luna、none 推理档位和最多 32 个输出 Token',
+      label: t('正在实测', 'Testing'),
+      detail: t(
+        '仅使用 gpt-5.6-luna、none 推理档位和最多 32 个输出 Token',
+        'Uses only gpt-5.6-luna, none reasoning effort, and at most 32 output tokens',
+      ),
     }
   }
 
   switch (status?.model_state ?? 'unchecked') {
-    case 'healthy':
+    case 'healthy': {
+      const latency = status?.model_latency_ms ?? 0
+      const checkedAt = formatCheckedAt(status?.model_checked_at)
       return {
         className: 'available',
-        label: '模型正常',
-        detail: `推理耗时 ${status?.model_latency_ms ?? 0} 毫秒 · ${formatCheckedAt(status?.model_checked_at)}`,
+        label: t('模型正常', 'Model healthy'),
+        detail: t(`推理耗时 ${latency} 毫秒 · ${checkedAt}`, `Inference took ${latency} ms · ${checkedAt}`),
       }
+    }
     case 'auth_error':
       return {
         className: 'unavailable',
-        label: '认证失败',
-        detail: '真实模型请求未通过账号认证',
+        label: t('认证失败', 'Authentication failed'),
+        detail: t('真实模型请求未通过账号认证', 'A real model request failed account authentication'),
       }
     case 'rate_limited':
       return {
         className: 'warning',
-        label: '触发限流',
-        detail: '模型路由返回频率或额度限制，账号已进入冷却',
+        label: t('触发限流', 'Rate limited'),
+        detail: t(
+          '模型路由返回频率或额度限制，账号已进入冷却',
+          'Model routing returned a rate or quota limit; the account is now cooling down',
+        ),
       }
     case 'upstream_error':
       return {
         className: 'unavailable',
-        label: '上游异常',
-        detail: '低成本推理探测没有完整结束',
+        label: t('上游异常', 'Upstream error'),
+        detail: t('低成本推理探测没有完整结束', 'The low-cost inference probe did not finish cleanly'),
       }
     default:
       return {
         className: 'unchecked',
-        label: '尚未实测',
-        detail: '点击实测 Luna 后只发送一次最小推理请求',
+        label: t('尚未实测', 'Not tested yet'),
+        detail: t('点击实测 Luna 后只发送一次最小推理请求', 'Click Test Luna to send a single minimal inference request'),
       }
   }
 }
@@ -138,20 +160,25 @@ function healthPresentation(status: AccountQuotaStatus | undefined, accountName:
 function quotaValue(status: AccountQuotaStatus | undefined): { value: string; detail: string } {
   if (!status) {
     return {
-      value: refreshingAccountData ? '读取中' : '尚未检查',
-      detail: '被动检查不会调用模型',
+      value: refreshingAccountData ? t('读取中', 'Reading') : t('尚未检查', 'Not checked'),
+      detail: t('被动检查不会调用模型', 'Passive checks do not call any model'),
     }
   }
-  if (!status.token_ok) return { value: '不可用', detail: '令牌刷新失败' }
+  if (!status.token_ok) return { value: t('不可用', 'Unavailable'), detail: t('令牌刷新失败', 'Token refresh failed') }
   if (status.limit != null && status.limit > 0) {
     return {
-      value: `剩余 ${status.remaining ?? 0}`,
-      detail: `已使用 ${status.used ?? 0} / ${status.limit} 次模型请求`,
+      value: t(`剩余 ${status.remaining ?? 0}`, `${status.remaining ?? 0} left`),
+      detail: t(
+        `已使用 ${status.used ?? 0} / ${status.limit} 次模型请求`,
+        `${status.used ?? 0} / ${status.limit} model requests used`,
+      ),
     }
   }
   return {
-    value: 'Zed 未公开',
-    detail: status.usage_based_billing ? '已启用按量计费' : '精确用量请前往 Zed 账单页面查看',
+    value: t('Zed 未公开', 'Not disclosed by Zed'),
+    detail: status.usage_based_billing
+      ? t('已启用按量计费', 'Usage-based billing is enabled')
+      : t('精确用量请前往 Zed 账单页面查看', 'See the Zed billing page for exact usage'),
   }
 }
 
@@ -175,31 +202,31 @@ function renderOverview(checkedAt?: number) {
   const usable = values.filter(status => status.usable).length
   const healthy = values.filter(status => status.model_state === 'healthy').length
   const cooling = accounts.filter(account => (statuses.get(account.name)?.cooldown_s ?? account.cooldown_s ?? 0) > 0).length
-  const current = accounts.find(account => account.current)?.name ?? '未选择'
+  const current = accounts.find(account => account.current)?.name ?? t('未选择', 'None selected')
   const checked = checkedAt
-    ? new Date(checkedAt * 1000).toLocaleTimeString('zh-CN', { hour12: false })
-    : '等待刷新'
+    ? new Date(checkedAt * 1000).toLocaleTimeString(locale, { hour12: false })
+    : t('等待刷新', 'Waiting for refresh')
 
   overview.innerHTML = `
     <article class="metric-card featured">
-      <span class="metric-label">当前调度账号</span>
+      <span class="metric-label">${t('当前调度账号', 'Current scheduling account')}</span>
       <strong>${escapeHtml(current)}</strong>
-      <small>新请求会优先使用此账号</small>
+      <small>${t('新请求会优先使用此账号', 'New requests prefer this account')}</small>
     </article>
     <article class="metric-card">
-      <span class="metric-label">令牌可用</span>
+      <span class="metric-label">${t('令牌可用', 'Token valid')}</span>
       <strong class="metric-good">${statuses.size ? `${usable} / ${accounts.length}` : '--'}</strong>
-      <small>被动令牌检查结果</small>
+      <small>${t('被动令牌检查结果', 'Passive token check result')}</small>
     </article>
     <article class="metric-card">
-      <span class="metric-label">Luna 实测正常</span>
+      <span class="metric-label">${t('Luna 实测正常', 'Luna healthy')}</span>
       <strong class="metric-good">${statuses.size ? `${healthy} / ${accounts.length}` : '--'}</strong>
-      <small>真实最小推理请求结果</small>
+      <small>${t('真实最小推理请求结果', 'Result of a real minimal inference request')}</small>
     </article>
     <article class="metric-card">
-      <span class="metric-label">冷却中</span>
+      <span class="metric-label">${t('冷却中', 'Cooling down')}</span>
       <strong class="${cooling ? 'metric-warn' : ''}">${cooling}</strong>
-      <small>最近刷新：${escapeHtml(checked)}</small>
+      <small>${t('最近刷新：', 'Last refreshed: ')}${escapeHtml(checked)}</small>
     </article>
   `
 }
@@ -212,8 +239,8 @@ function renderAccountCards() {
     list.innerHTML = `
       <div class="empty-state">
         <div class="empty-state-icon">${icons.users}</div>
-        <strong>还没有可用账号</strong>
-        <p>通过下方 GitHub OAuth 登录按钮添加第一个 Zed 账号。</p>
+        <strong>${t('还没有可用账号', 'No accounts yet')}</strong>
+        <p>${t('通过下方 GitHub OAuth 登录按钮添加第一个 Zed 账号。', 'Add your first Zed account with the GitHub OAuth button below.')}</p>
       </div>
     `
     return
@@ -235,9 +262,9 @@ function renderAccountCards() {
             <div>
               <div class="account-name-line">
                 <strong>${escapeHtml(account.name)}</strong>
-                ${account.current ? '<span class="state-pill current">当前账号</span>' : ''}
+                ${account.current ? `<span class="state-pill current">${t('当前账号', 'Current account')}</span>` : ''}
               </div>
-              <span class="account-id">用户编号 ${escapeHtml(account.user_id)}</span>
+              <span class="account-id">${t('用户编号 ', 'User ID ')}${escapeHtml(account.user_id)}</span>
             </div>
           </div>
           <div class="account-state-group">
@@ -248,38 +275,38 @@ function renderAccountCards() {
 
         <div class="account-detail-grid">
           <div class="detail-cell">
-            <span>套餐</span>
+            <span>${t('套餐', 'Plan')}</span>
             <strong>${escapeHtml(formatPlan(status?.plan))}</strong>
-            <small>${status?.billing_ok ? '已读取账单信息' : escapeHtml(quota.detail)}</small>
+            <small>${status?.billing_ok ? t('已读取账单信息', 'Billing details loaded') : escapeHtml(quota.detail)}</small>
           </div>
           <div class="detail-cell">
-            <span>到期或续订</span>
+            <span>${t('到期或续订', 'Expires / renews')}</span>
             <strong>${escapeHtml(formatDate(status?.subscription_ends_at))}</strong>
-            <small>${status?.overdue ? 'Zed 返回账单逾期提示' : '来自 Zed 账号接口'}</small>
+            <small>${status?.overdue ? t('Zed 返回账单逾期提示', 'Zed reports an overdue bill') : t('来自 Zed 账号接口', 'From the Zed account API')}</small>
           </div>
           <div class="detail-cell">
-            <span>额度</span>
+            <span>${t('额度', 'Quota')}</span>
             <strong>${escapeHtml(balance.value)}</strong>
             <small>${escapeHtml(balance.detail)}</small>
           </div>
           <div class="detail-cell">
-            <span>模型链路</span>
+            <span>${t('模型链路', 'Model path')}</span>
             <strong class="tone-${health.className}">${escapeHtml(health.label)}</strong>
-            <small>${escapeHtml(health.detail)}${cooldown > 0 ? ` · 冷却 ${cooldown} 秒` : ''}</small>
+            <small>${escapeHtml(health.detail)}${cooldown > 0 ? t(` · 冷却 ${cooldown} 秒`, ` · ${cooldown}s cooldown`) : ''}</small>
           </div>
         </div>
 
         <footer class="account-card-footer">
           <a href="https://zed.dev/account/billing" target="_blank" rel="noreferrer">
-            查看 Zed 账单 ${icons.externalLink}
+            ${t('查看 Zed 账单', 'View Zed billing')} ${icons.externalLink}
           </a>
           <div>
             <button class="button secondary health-button" data-index="${index}" type="button" ${checking ? 'disabled' : ''}>
-              ${checking ? '<span class="spinner"></span>检测中' : `${icons.activity} 实测 Luna`}
+              ${checking ? `<span class="spinner"></span>${t('检测中', 'Testing')}` : `${icons.activity} ${t('实测 Luna', 'Test Luna')}`}
             </button>
             ${account.current
-              ? `<span class="active-account-hint">${icons.check} 已参与优先调度</span>`
-              : `<button class="button primary switch-button" data-index="${index}" type="button">切换到此账号</button>`}
+              ? `<span class="active-account-hint">${icons.check} ${t('已参与优先调度', 'In the priority pool')}</span>`
+              : `<button class="button primary switch-button" data-index="${index}" type="button">${t('切换到此账号', 'Switch to this account')}</button>`}
           </div>
         </footer>
       </article>
@@ -293,10 +320,11 @@ function renderAccountCards() {
       button.disabled = true
       try {
         await switchAccount(account.name)
-        showToast(`已切换到账号：${account.name}`)
+        showToast(t(`已切换到账号：${account.name}`, `Switched to account: ${account.name}`))
         await loadAccounts()
       } catch (error) {
-        showToast(`账号切换失败：${error instanceof Error ? error.message : '未知错误'}`)
+        const message = error instanceof Error ? error.message : t('未知错误', 'Unknown error')
+        showToast(t(`账号切换失败：${message}`, `Failed to switch account: ${message}`))
         button.disabled = false
       }
     })
@@ -315,16 +343,16 @@ function updateActionButtons() {
   if (refreshButton) {
     refreshButton.disabled = refreshingAccountData || checkingAllAccounts
     refreshButton.innerHTML = refreshingAccountData
-      ? '<span class="spinner"></span>正在刷新'
-      : `${icons.refresh} 刷新账号数据`
+      ? `<span class="spinner"></span>${t('正在刷新', 'Refreshing')}`
+      : `${icons.refresh} ${t('刷新账号数据', 'Refresh account data')}`
   }
 
   const healthButton = document.getElementById('check-all-button') as HTMLButtonElement | null
   if (healthButton) {
     healthButton.disabled = checkingAllAccounts || refreshingAccountData || accounts.length === 0
     healthButton.innerHTML = checkingAllAccounts
-      ? '<span class="spinner"></span>正在实测全部账号'
-      : `${icons.activity} 全部账号实测`
+      ? `<span class="spinner"></span>${t('正在实测全部账号', 'Testing all accounts')}`
+      : `${icons.activity} ${t('全部账号实测', 'Test all accounts')}`
   }
 }
 
@@ -339,9 +367,18 @@ async function refreshAccountData(silent = false) {
     statuses = new Map(response.accounts.map(status => [status.name, status]))
     renderOverview(response.checked_at)
     renderAccountCards()
-    if (!silent) showToast('账号令牌、套餐与额度信息已刷新；本操作没有调用模型')
+    if (!silent)
+      showToast(
+        t(
+          '账号令牌、套餐与额度信息已刷新；本操作没有调用模型',
+          'Account token, plan, and quota details refreshed; no model was called',
+        ),
+      )
   } catch (error) {
-    if (!silent) showToast(`账号数据刷新失败：${error instanceof Error ? error.message : '未知错误'}`)
+    if (!silent) {
+      const message = error instanceof Error ? error.message : t('未知错误', 'Unknown error')
+      showToast(t(`账号数据刷新失败：${message}`, `Failed to refresh account data: ${message}`))
+    }
   } finally {
     refreshingAccountData = false
     updateActionButtons()
@@ -361,9 +398,15 @@ async function runHealthCheck(accountName?: string) {
     response.accounts.forEach(mergeHealthResult)
     renderOverview()
     const passed = response.accounts.filter(result => result.model_ok).length
-    showToast(`账号实测完成：${passed}/${response.accounts.length} 通过 · 仅 ${response.probe.model} · ${response.probe.reasoning_effort}`)
+    showToast(
+      t(
+        `账号实测完成：${passed}/${response.accounts.length} 通过 · 仅 ${response.probe.model} · ${response.probe.reasoning_effort}`,
+        `Account test complete: ${passed}/${response.accounts.length} passed · only ${response.probe.model} · ${response.probe.reasoning_effort}`,
+      ),
+    )
   } catch (error) {
-    showToast(`账号实测失败：${error instanceof Error ? error.message : '未知错误'}`)
+    const message = error instanceof Error ? error.message : t('未知错误', 'Unknown error')
+    showToast(t(`账号实测失败：${message}`, `Account test failed: ${message}`))
   } finally {
     if (accountName) checkingAccounts.delete(accountName)
     else checkingAllAccounts = false
@@ -386,7 +429,8 @@ async function loadAccounts() {
     updateActionButtons()
     if (accounts.length > 0) void refreshAccountData(true)
   } catch (error) {
-    list.innerHTML = `<div class="error-state">账号加载失败：${error instanceof Error ? escapeHtml(error.message) : '未知错误'}</div>`
+    const message = error instanceof Error ? escapeHtml(error.message) : t('未知错误', 'Unknown error')
+    list.innerHTML = `<div class="error-state">${t(`账号加载失败：${message}`, `Failed to load accounts: ${message}`)}</div>`
   }
 }
 
@@ -395,33 +439,33 @@ export function renderAccounts() {
   page.innerHTML = `
     <div class="page-heading">
       <div>
-        <span class="eyebrow">账号与故障转移</span>
-        <h1>账号中心</h1>
-        <p>集中查看令牌、套餐、额度、冷却状态和真实模型链路，并控制当前优先调度账号。</p>
+        <span class="eyebrow">${t('账号与故障转移', 'Accounts & failover')}</span>
+        <h1>${t('账号中心', 'Account center')}</h1>
+        <p>${t('集中查看令牌、套餐、额度、冷却状态和真实模型链路，并控制当前优先调度账号。', 'Review tokens, plans, quota, cooldowns, and real model paths in one place, and control which account is scheduled first.')}</p>
       </div>
       <div class="heading-actions">
-        <button class="button secondary" id="refresh-accounts-button" type="button">${icons.refresh} 刷新账号数据</button>
-        <button class="button primary" id="check-all-button" type="button">${icons.activity} 全部账号实测</button>
+        <button class="button secondary" id="refresh-accounts-button" type="button">${icons.refresh} ${t('刷新账号数据', 'Refresh account data')}</button>
+        <button class="button primary" id="check-all-button" type="button">${icons.activity} ${t('全部账号实测', 'Test all accounts')}</button>
       </div>
     </div>
 
     <div class="notice-banner">
       <span>${icons.shield}</span>
-      <p><strong>检测成本说明</strong>：令牌、套餐和额度检查不会调用模型；账号实测只会对每个选中账号调用一次 gpt-5.6-luna，使用 none 推理档位、短提示词和最多 32 个输出 Token，不会轮流检测其他模型。</p>
+      <p><strong>${t('检测成本说明', 'About check cost')}</strong>${t('：令牌、套餐和额度检查不会调用模型；账号实测只会对每个选中账号调用一次 gpt-5.6-luna，使用 none 推理档位、短提示词和最多 32 个输出 Token，不会轮流检测其他模型。', ': Token, plan, and quota checks do not call any model. Account tests call gpt-5.6-luna once per selected account with none reasoning effort, a short prompt, and at most 32 output tokens; other models are not tested in turn.')}</p>
     </div>
 
     <div class="metric-grid" id="account-overview"></div>
 
     <div class="section-heading">
-      <div><span>账号列表</span><p>健康账号优先，异常账号会按错误类型自动进入冷却。</p></div>
+      <div><span>${t('账号列表', 'Accounts')}</span><p>${t('健康账号优先，异常账号会按错误类型自动进入冷却。', 'Healthy accounts come first; failing accounts cool down automatically based on the error type.')}</p></div>
     </div>
     <div class="account-list" id="account-list">
-      <div class="loading-panel"><span class="spinner"></span>正在加载账号</div>
+      <div class="loading-panel"><span class="spinner"></span>${t('正在加载账号', 'Loading accounts')}</div>
     </div>
 
     <button class="add-account-card" id="add-account-button" type="button">
       <span class="add-account-icon">${icons.plus}</span>
-      <span><strong>添加 Zed 账号</strong><small>通过 GitHub OAuth 完成登录，不在页面中输入或保存密码</small></span>
+      <span><strong>${t('添加 Zed 账号', 'Add a Zed account')}</strong><small>${t('通过 GitHub OAuth 完成登录，不在页面中输入或保存密码', 'Sign in with GitHub OAuth; no password is entered or stored on this page')}</small></span>
       <span class="add-account-arrow">${icons.arrowRight}</span>
     </button>
     <div class="login-banner" id="login-banner" hidden></div>
@@ -438,7 +482,7 @@ async function startOAuthLogin() {
   const button = document.getElementById('add-account-button') as HTMLButtonElement
   button.disabled = true
   banner.hidden = false
-  banner.innerHTML = '<span class="spinner"></span><span>正在生成密钥并启动 GitHub OAuth…</span>'
+  banner.innerHTML = `<span class="spinner"></span><span>${t('正在生成密钥并启动 GitHub OAuth…', 'Generating a key and starting GitHub OAuth…')}</span>`
 
   try {
     const data = await startLogin(undefined, 'paste')
@@ -449,12 +493,12 @@ async function startOAuthLogin() {
     }
 
     banner.innerHTML = `
-      <span>授权链接 10 分钟内有效</span>
-      ${data.login_url ? `<a id="login-link" target="_blank" rel="noreferrer">打开授权页面 ${icons.externalLink}</a>` : ''}
-      <span>登录后若浏览器显示无法访问此页面，复制地址栏完整网址粘贴到这里</span>
+      <span>${t('授权链接 10 分钟内有效', 'The authorization link is valid for 10 minutes')}</span>
+      ${data.login_url ? `<a id="login-link" target="_blank" rel="noreferrer">${t('打开授权页面', 'Open the authorization page')} ${icons.externalLink}</a>` : ''}
+      <span>${t('登录后若浏览器显示无法访问此页面，复制地址栏完整网址粘贴到这里', 'If the browser says this page cannot be reached after sign-in, copy the full URL from the address bar and paste it here')}</span>
       <div class="paste-row">
-        <input id="paste-url-input" type="text" autocomplete="off" placeholder="粘贴浏览器地址栏里的完整网址" />
-        <button class="button primary" id="paste-complete-button" type="button">完成登录</button>
+        <input id="paste-url-input" type="text" autocomplete="off" placeholder="${t('粘贴浏览器地址栏里的完整网址', 'Paste the full URL from the address bar')}" />
+        <button class="button primary" id="paste-complete-button" type="button">${t('完成登录', 'Complete sign-in')}</button>
       </div>
       <span class="error-text" id="paste-error" hidden></span>
     `
@@ -470,7 +514,7 @@ async function startOAuthLogin() {
       const url = input.value.trim()
       if (!url) {
         errorText.hidden = false
-        errorText.innerHTML = `${icons.xCircle} 请先粘贴地址栏完整网址`
+        errorText.innerHTML = `${icons.xCircle} ${t('请先粘贴地址栏完整网址', 'Paste the full URL from the address bar first')}`
         return
       }
       submit.disabled = true
@@ -478,14 +522,15 @@ async function startOAuthLogin() {
       try {
         await completeLogin(url)
         statuses.clear()
-        showToast('Zed 账号添加成功')
+        showToast(t('Zed 账号添加成功', 'Zed account added'))
         await loadAccounts()
-        banner.innerHTML = `${icons.checkCircle}<span>账号登录成功，正在刷新账号列表。</span>`
+        banner.innerHTML = `${icons.checkCircle}<span>${t('账号登录成功，正在刷新账号列表。', 'Signed in successfully; refreshing the account list.')}</span>`
         button.disabled = false
         window.setTimeout(() => { banner.hidden = true }, 3000)
       } catch (error) {
         errorText.hidden = false
-        errorText.innerHTML = `${icons.xCircle} ${escapeHtml(error instanceof Error ? error.message : '未知错误')}`
+        const message = escapeHtml(error instanceof Error ? error.message : t('未知错误', 'Unknown error'))
+        errorText.innerHTML = `${icons.xCircle} ${message}`
         submit.disabled = false
       }
     }
@@ -498,7 +543,8 @@ async function startOAuthLogin() {
       }
     })
   } catch (error) {
-    banner.innerHTML = `<span class="error-text">${icons.xCircle} 登录启动失败：${error instanceof Error ? escapeHtml(error.message) : '未知错误'}</span>`
+    const message = error instanceof Error ? escapeHtml(error.message) : t('未知错误', 'Unknown error')
+    banner.innerHTML = `<span class="error-text">${icons.xCircle} ${t(`登录启动失败：${message}`, `Failed to start sign-in: ${message}`)}</span>`
     button.disabled = false
   }
 }

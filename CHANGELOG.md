@@ -32,7 +32,8 @@ First public release.
   and ships a `HEALTHCHECK`. Tags `v*` publish a multi-arch image to
   `ghcr.io/wray-lee/zed-proxy`; `docker-compose.yml` runs it and
   `docker-compose.build.yml` builds from source.
-- Web management page served at `/`.
+- Web management page served at `/`, in English and Chinese (browser language by
+  default, switchable in the top bar).
 
 ### Changed
 
