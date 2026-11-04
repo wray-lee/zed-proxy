@@ -46,7 +46,8 @@ say whether you ran it.
   for real tokens or keys before opening the pull request.
 - Update the documentation in the same pull request when you change a
   behaviour, an endpoint, an environment variable or a default. That means
-  `README.md`, `README.zh-CN.md` and `docs/architecture.md` where relevant,
+  `README.md`, `README.zh-CN.md` and the matching pages under `docs/` (both
+  languages) where relevant,
   plus `CHANGELOG.md` for user-visible changes.
 - Use LF line endings. `.gitattributes` normalises text files on commit; do
   not defeat it with `core.autocrlf` settings of your own.

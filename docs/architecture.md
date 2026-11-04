@@ -1,6 +1,8 @@
+[← Back to README](../README.md)
+
 # Architecture
 
-This page maps the modules and the two flows that matter: a model request and a login. It does not repeat the endpoint and configuration tables; see [README.md](../README.md) for those.
+This page maps the modules and the two flows that matter: a model request and a login. It does not repeat the endpoint and configuration tables; see [API endpoints](api.md) and [Configuration](configuration.md) for those.
 
 ## Modules
 
