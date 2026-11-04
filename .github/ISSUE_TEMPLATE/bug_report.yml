@@ -1,0 +1,82 @@
+name: Bug report
+description: Report a reproducible problem with ZedProxy
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please search existing issues first.
+        Do not report security vulnerabilities here; see SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag, image tag, or commit hash.
+      placeholder: 0.1.0 / zed-proxy:local / 1583347
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      description: How are you running ZedProxy?
+      options:
+        - Docker image
+        - Docker Compose
+        - Built from source (Linux)
+        - Built from source (Windows)
+        - Built from source (macOS)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment details
+      description: OS and architecture, Zig version if built from source, client used.
+      placeholder: Ubuntu 24.04 arm64, Zed 1.8.2 client, curl
+    validations:
+      required: false
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps that trigger the problem.
+      placeholder: |
+        1. Configure ...
+        2. Send `curl ...`
+        3. See error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What happened instead? Include the HTTP status and response body if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Relevant stdout from the server. Redact gateway API keys, account
+        credentials, tokens and JWTs before pasting.
+      render: text
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I removed API keys, tokens and account credentials from this report.
+          required: true

@@ -1,0 +1,16 @@
+.git
+.zig-cache
+zig-out*
+webui/node_modules
+webui/dist
+accounts.json
+active_account.txt
+api_key
+*.pem
+*.key
+*.log
+tmp
+data
+.write_probe
+.env
+.env.*

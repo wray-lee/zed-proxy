@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Build WebUI
+        run: |
+          cd webui
+          npm ci
+          npm run build
+      - name: Install Zig 0.15.2
+        run: |
+          curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o /tmp/zig.tar.xz
+          sudo tar -xJf /tmp/zig.tar.xz -C /opt
+          echo /opt/zig-x86_64-linux-0.15.2 >> "$GITHUB_PATH"
+      - name: Test
+        run: zig build test --summary all
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: all
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          outputs: type=cacheonly
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build image
+        run: docker build -t zed-proxy:ci .
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          cleanup() {
+            status=$?
+            if [ "$status" -ne 0 ]; then
+              docker logs zed-proxy-ci || true
+            fi
+            docker rm -f zed-proxy-ci >/dev/null 2>&1 || true
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          docker run -d --name zed-proxy-ci \
+            -e ZED_API_KEY=ci-test-key \
+            -p 127.0.0.1:18090:8001 zed-proxy:ci
+
+          code=""
+          for _ in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18090/health || true)
+            if [ "$code" = "200" ]; then break; fi
+            sleep 1
+          done
+          if [ "$code" != "200" ]; then
+            echo "health did not return 200 within 30s (last: $code)"
+            exit 1
+          fi
+
+          expect() {
+            want=$1
+            shift
+            got=$(curl -s -o /dev/null -w '%{http_code}' "$@" || true)
+            if [ "$got" != "$want" ]; then
+              echo "expected HTTP $want, got $got: curl $*"
+              return 1
+            fi
+          }
+
+          expect 200 http://127.0.0.1:18090/
+          expect 401 http://127.0.0.1:18090/v1/models
+          expect 200 -H 'Authorization: Bearer ci-test-key' http://127.0.0.1:18090/v1/models
+          expect 200 -H 'x-api-key: ci-test-key' http://127.0.0.1:18090/v1/models
+          expect 401 http://127.0.0.1:18090/zed/accounts
