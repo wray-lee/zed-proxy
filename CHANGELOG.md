@@ -28,8 +28,10 @@ First public release.
 - Paste-back login for container and remote deployments: start the login with
   `POST /zed/login` and `mode=paste`, submit the callback URL with
   `POST /zed/login/complete`, and poll `GET /zed/login/status`.
-- Docker image and compose example: a multi-stage build that bundles the Web
-  UI, runs as uid 10001, and ships a `HEALTHCHECK`.
+- Docker image: a multi-stage build that bundles the Web UI, runs as uid 10001,
+  and ships a `HEALTHCHECK`. Tags `v*` publish a multi-arch image to
+  `ghcr.io/wray-lee/zed-proxy`; `docker-compose.yml` runs it and
+  `docker-compose.build.yml` builds from source.
 - Web management page served at `/`.
 
 ### Changed

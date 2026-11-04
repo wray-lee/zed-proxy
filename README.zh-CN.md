@@ -18,20 +18,19 @@ Zed 的模型服务只接受它自己的请求结构，并要求一个已登录�
 - 账号池、冷却与 failover。鉴权失败、限流、连续上游错误会让账号进入冷却，下一次请求改试其它账号。
 - `/` 提供 Web 管理页。
 - 网关 API key 鉴权，绑定策略 fail-closed：非回环地址且未配置任何 key 时拒绝启动。
-- Docker 镜像与 compose 示例。
+- GHCR 多架构预构建镜像，以及预构建镜像与源码构建两份 compose 文件。
 - 容器/远程部署可用的粘贴回调登录。
 - `/health` 存活探针。
 
 ## 快速开始
 
 ```sh
-cp docker-compose.example.yml docker-compose.yml
 cp .env.example .env          # 然后把 ZED_API_KEY 改成自己的值
-docker compose up -d --build
+docker compose up -d          # 拉取 ghcr.io/wray-lee/zed-proxy
 curl -s http://127.0.0.1:8001/health
 ```
 
-compose 文件从当前目录构建，镜像固定命名为 `zed-proxy:local`。只发布宿主机 `127.0.0.1:8001`，数据落在 `./data`。若镜像已存在，删掉 `build: .` 一行，保留 `image: zed-proxy:local`。
+`docker-compose.yml` 直接运行 GHCR 上的 `linux/amd64`、`linux/arm64` 预构建镜像。要从当前目录构建，用 `docker compose -f docker-compose.build.yml up -d --build`，该文件把镜像命名为 `zed-proxy:local`。两份都只发布宿主机 `127.0.0.1:8001`，数据落在 `./data`。
 
 Linux 上让容器用户（uid 10001）可写数据目录：
 

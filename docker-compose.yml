@@ -1,9 +1,7 @@
+# Run the prebuilt image from GHCR. To build from source use docker-compose.build.yml.
 services:
   zed-proxy:
-    # 从当前目录构建，产物固定命名为 zed-proxy:local；若已有该镜像，
-    # 可删掉 build 一行，仅用 image 引用。
-    build: .
-    image: zed-proxy:local
+    image: ghcr.io/wray-lee/zed-proxy:0.1.0
     ports:
       - "127.0.0.1:8001:8001"
     volumes:
@@ -13,7 +11,7 @@ services:
       ZED_API_HOST: 0.0.0.0
       ZED_API_PORT: "8001"
       ZED_DATA_DIR: /data
-      ZED_API_KEY: ${ZED_API_KEY:?请先在 .env 设置 ZED_API_KEY}
+      ZED_API_KEY: ${ZED_API_KEY:?set ZED_API_KEY in .env first}
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS \"http://127.0.0.1:$${ZED_API_PORT:-8001}/health\""]
       interval: 30s

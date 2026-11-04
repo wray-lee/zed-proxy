@@ -18,20 +18,19 @@ Zed's model service expects its own request payloads and a signed-in Zed account
 - Account pool with cooldowns and failover. Auth errors, rate limits, and repeated upstream errors bench an account for a period, and the next request is attempted on another account.
 - Web management page served at `/`.
 - Gateway API key authentication with a fail-closed bind rule: a non-loopback bind without any configured key refuses to start.
-- Docker image and compose example.
+- Prebuilt multi-arch image on GHCR, plus compose files for the prebuilt image and for building from source.
 - Paste-callback login for container and remote deployments.
 - `/health` liveness endpoint.
 
 ## Quick start
 
 ```sh
-cp docker-compose.example.yml docker-compose.yml
 cp .env.example .env          # then set ZED_API_KEY to your own value
-docker compose up -d --build
+docker compose up -d          # pulls ghcr.io/wray-lee/zed-proxy
 curl -s http://127.0.0.1:8001/health
 ```
 
-The compose file builds from the current directory and tags the image `zed-proxy:local`. It publishes only `127.0.0.1:8001` on the host and stores data in `./data`. If the image already exists, remove the `build: .` line and keep `image: zed-proxy:local`.
+`docker-compose.yml` runs the prebuilt `linux/amd64` and `linux/arm64` image from GHCR. To build from this checkout instead, run `docker compose -f docker-compose.build.yml up -d --build`; that file tags the image `zed-proxy:local`. Both publish only `127.0.0.1:8001` on the host and store data in `./data`.
 
 On Linux, make the data directory writable by the container user (uid 10001):
 
