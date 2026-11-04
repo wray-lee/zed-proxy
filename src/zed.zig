@@ -26,10 +26,23 @@ fn fetchNewToken(allocator: std.mem.Allocator, acc: *accounts.Account) ![]const 
     // matching the chat/model paths. Going direct here was the root cause of
     // intermittent "Token Refresh" failures in proxied environments.
     proxy.init(allocator);
+
+    // The token endpoint rejects an empty body: it needs the organization id,
+    // which comes from the account's own profile.
+    const profile = fetchBillingUsage(allocator, acc) catch return error.TokenRefreshFailed;
+    defer allocator.free(profile);
+    const org_id = (try parseOrganizationId(allocator, profile)) orelse {
+        std.debug.print("[zed] no organization id in users/me for uid {s}\n", .{acc.user_id});
+        return error.TokenRefreshFailed;
+    };
+    defer allocator.free(org_id);
+    const req_body = try std.fmt.allocPrint(allocator, "{{\"organization_id\":\"{s}\"}}", .{org_id});
+    defer allocator.free(req_body);
+
     const body = if (proxy.getHost() != null)
-        try fetchTokenViaProxy(allocator, acc)
+        try fetchTokenViaProxy(allocator, acc, req_body)
     else
-        try fetchTokenDirect(allocator, acc);
+        try fetchTokenDirect(allocator, acc, req_body);
     defer allocator.free(body);
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return error.TokenRefreshFailed;
@@ -47,8 +60,50 @@ fn fetchNewToken(allocator: std.mem.Allocator, acc: *accounts.Account) ![]const 
     return token;
 }
 
+/// Pick the organization id from a `client/users/me` body: the default one,
+/// else the personal one, else the first. Returns an owned string or null.
+pub fn parseOrganizationId(allocator: std.mem.Allocator, body: []const u8) !?[]u8 {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return null;
+    defer parsed.deinit();
+    if (parsed.value != .object) return null;
+    const root = parsed.value.object;
+    if (root.get("default_organization_id")) |v| {
+        if (v == .string and v.string.len > 0) return try allocator.dupe(u8, v.string);
+    }
+    const orgs = root.get("organizations") orelse return null;
+    if (orgs != .array) return null;
+    var first: ?[]const u8 = null;
+    for (orgs.array.items) |o| {
+        if (o != .object) continue;
+        const id = switch (o.object.get("id") orelse continue) {
+            .string => |x| x,
+            else => continue,
+        };
+        if (first == null) first = id;
+        if (o.object.get("is_personal")) |p| {
+            if (p == .bool and p.bool) return try allocator.dupe(u8, id);
+        }
+    }
+    return if (first) |id| try allocator.dupe(u8, id) else null;
+}
+
+test "parseOrganizationId prefers default, then personal, then first" {
+    const a = std.testing.allocator;
+    const d = (try parseOrganizationId(a, "{\"default_organization_id\":\"o1\",\"organizations\":[{\"id\":\"o2\"}]}")).?;
+    defer a.free(d);
+    try std.testing.expectEqualStrings("o1", d);
+    const p = (try parseOrganizationId(a, "{\"organizations\":[{\"id\":\"o2\"},{\"id\":\"o3\",\"is_personal\":true}]}")).?;
+    defer a.free(p);
+    try std.testing.expectEqualStrings("o3", p);
+    const f = (try parseOrganizationId(a, "{\"organizations\":[{\"id\":\"o2\"}]}")).?;
+    defer a.free(f);
+    try std.testing.expectEqualStrings("o2", f);
+    try std.testing.expect((try parseOrganizationId(a, "{}")) == null);
+    try std.testing.expect((try parseOrganizationId(a, "nope")) == null);
+}
+
 /// Fetch an LLM token directly (no proxy). Returns an owned response body.
-fn fetchTokenDirect(allocator: std.mem.Allocator, acc: *accounts.Account) ![]const u8 {
+fn fetchTokenDirect(allocator: std.mem.Allocator, acc: *accounts.Account, req_body: []const u8) ![]const u8 {
     const auth_header = try std.fmt.allocPrint(allocator, "{s} {s}", .{ acc.user_id, acc.credential_json });
     defer allocator.free(auth_header);
 
@@ -79,7 +134,7 @@ fn fetchTokenDirect(allocator: std.mem.Allocator, acc: *accounts.Account) ![]con
     const result = client.fetch(.{
         .location = .{ .url = "https://cloud.zed.dev/client/llm_tokens" },
         .method = .POST,
-        .payload = "",
+        .payload = req_body,
         .response_writer = &response_buf.writer,
         .extra_headers = headers[0..header_count],
     }) catch |err| {
@@ -95,7 +150,7 @@ fn fetchTokenDirect(allocator: std.mem.Allocator, acc: *accounts.Account) ![]con
 }
 
 /// Fetch an LLM token via the curl proxy. Returns an owned response body.
-fn fetchTokenViaProxy(allocator: std.mem.Allocator, acc: *accounts.Account) ![]const u8 {
+fn fetchTokenViaProxy(allocator: std.mem.Allocator, acc: *accounts.Account, req_body: []const u8) ![]const u8 {
     const p_url = try std.fmt.allocPrint(allocator, "http://{s}:{d}", .{ proxy.getHost().?, proxy.getPort() });
     defer allocator.free(p_url);
 
@@ -119,7 +174,7 @@ fn fetchTokenViaProxy(allocator: std.mem.Allocator, acc: *accounts.Account) ![]c
         proxy.USER_AGENT_HEADER,
     });
     if (system_id_header) |h| try argv.appendSlice(allocator, &.{ "-H", h });
-    try argv.appendSlice(allocator, &.{ "--max-time", "15", "-w", "\n__HTTP_STATUS__%{http_code}" });
+    try argv.appendSlice(allocator, &.{ "-d", req_body, "--max-time", "15", "-w", "\n__HTTP_STATUS__%{http_code}" });
 
     const result = std.process.Child.run(.{
         .allocator = allocator,

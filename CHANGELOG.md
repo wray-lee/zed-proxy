@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog v1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-11-05
+
+### Fixed
+
+- Token refresh failed with HTTP 400 ("Invalid JSON") because the request to
+  `client/llm_tokens` had an empty body. It now sends the account's
+  `organization_id`, taken from `client/users/me` (default organization, else
+  the personal one, else the first).
+
 ## [0.1.0] - 2026-11-05
 
 First public release.
