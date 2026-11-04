@@ -1,13 +1,32 @@
-English | [简体中文](README.zh-CN.md)
+<div align="center">
+
+<img src="docs/assets/logo.svg" alt="ZedProxy logo" width="96" height="96">
 
 # ZedProxy
 
+**Use Zed-hosted models, including Gemini 4, from any OpenAI, Anthropic or Codex client.**
+
+<a href="README.zh-CN.md">简体中文</a> | English
+
 [![CI](https://github.com/wray-lee/zed-proxy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wray-lee/zed-proxy/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/wray-lee/zed-proxy?sort=semver)](https://github.com/wray-lee/zed-proxy/releases)
+[![Docker image](https://img.shields.io/badge/ghcr.io-wray--lee%2Fzed--proxy-2496ED?logo=docker&logoColor=white)](https://github.com/wray-lee/zed-proxy/pkgs/container/zed-proxy)
+[![Zig](https://img.shields.io/badge/Zig-0.15.2-F7A41D?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+<a href="#quick-start">Quick start</a> · <a href="#features">Features</a> · <a href="docs/architecture.md">Architecture</a> · <a href="CONTRIBUTING.md">Contributing</a>
+
+<img src="docs/assets/webui-accounts.png" alt="ZedProxy Web UI account center" width="860">
+
+<sub>Account center: quota, cooldown and live model checks per account.</sub>
+
+</div>
 
 ZedProxy is an HTTP gateway that exposes the models Zed hosts (including `gemini-4-argon`) through the OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages request formats.
 
 Zed's model service expects its own request payloads and a signed-in Zed account. ZedProxy accepts the API shapes that coding clients already speak, converts each request to Zed's format, forwards it to `cloud.zed.dev` with an account credential from its pool, and converts the response back. Clients such as OmniRoute, Codex, and Claude Code can then use Zed-hosted models through their normal OpenAI or Anthropic configuration.
+
+> Unofficial project, not affiliated with or endorsed by Zed Industries. See [Unofficial project and terms risk](#unofficial-project-and-terms-risk).
 
 ## Features
 
@@ -21,6 +40,14 @@ Zed's model service expects its own request payloads and a signed-in Zed account
 - Prebuilt multi-arch image on GHCR, plus compose files for the prebuilt image and for building from source.
 - Paste-callback login for container and remote deployments.
 - `/health` liveness endpoint.
+
+## Web UI
+
+The management page at `/` shows every account's plan, quota, cooldown and a live model check, and has a read-only service diagnosis.
+
+<p align="center"><img src="docs/assets/webui-health.png" alt="ZedProxy Web UI service check" width="760"></p>
+
+The page text is currently Chinese only.
 
 ## Quick start
 

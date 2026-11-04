@@ -1,13 +1,32 @@
-[English](README.md) | 简体中文
+<div align="center">
+
+<img src="docs/assets/logo.svg" alt="ZedProxy logo" width="96" height="96">
 
 # ZedProxy
 
+**让任何 OpenAI、Anthropic、Codex 客户端使用 Zed 托管的模型，包括 Gemini 4。**
+
+简体中文 | <a href="README.md">English</a>
+
 [![CI](https://github.com/wray-lee/zed-proxy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wray-lee/zed-proxy/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/wray-lee/zed-proxy?sort=semver)](https://github.com/wray-lee/zed-proxy/releases)
+[![Docker image](https://img.shields.io/badge/ghcr.io-wray--lee%2Fzed--proxy-2496ED?logo=docker&logoColor=white)](https://github.com/wray-lee/zed-proxy/pkgs/container/zed-proxy)
+[![Zig](https://img.shields.io/badge/Zig-0.15.2-F7A41D?logo=zig&logoColor=white)](https://ziglang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+<a href="#快速开始">快速开始</a> · <a href="#功能">功能</a> · <a href="docs/architecture.md">架构</a> · <a href="CONTRIBUTING.md">贡献指南</a>
+
+<img src="docs/assets/webui-accounts.png" alt="ZedProxy Web UI account center" width="860">
+
+<sub>账号中心：逐账号查看额度、冷却状态与真实模型探测。</sub>
+
+</div>
 
 ZedProxy 是一个 HTTP 网关，用 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages 三种请求格式访问 Zed 托管的模型（包括 `gemini-4-argon`）。
 
 Zed 的模型服务只接受它自己的请求结构，并要求一个已登录的 Zed 账号。ZedProxy 接受各编程客户端已经在用的 API 形状，把请求转换成 Zed 的格式，用账号池里的凭据转发到 `cloud.zed.dev`，再把响应转换回来。这样 OmniRoute、Codex、Claude Code 等客户端就能通过各自习惯的 OpenAI 或 Anthropic 配置使用 Zed 托管的模型。
+
+> 非官方项目，与 Zed Industries 无关联，也未获其认可。见[非官方声明与条款风险](#非官方声明与条款风险)。
 
 ## 功能
 
@@ -21,6 +40,14 @@ Zed 的模型服务只接受它自己的请求结构，并要求一个已登录�
 - GHCR 多架构预构建镜像，以及预构建镜像与源码构建两份 compose 文件。
 - 容器/远程部署可用的粘贴回调登录。
 - `/health` 存活探针。
+
+## Web UI
+
+根路径 `/` 的管理页展示每个账号的套餐、额度、冷却状态和真实模型探测，并提供只读的服务诊断。
+
+<p align="center"><img src="docs/assets/webui-health.png" alt="ZedProxy Web UI 服务检查" width="760"></p>
+
+页面文字目前只有中文。
 
 ## 快速开始
 
