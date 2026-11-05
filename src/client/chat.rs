@@ -234,6 +234,7 @@ fn decode_tool_message(object: &Map<String, Value>) -> Option<ToolResult> {
         tool_use_id: id.to_string(),
         output: tool_content_text(object.get("content")),
         is_error: false,
+        custom: false,
     })
 }
 
@@ -774,6 +775,7 @@ mod tests {
             tool_use_id: id.to_string(),
             output: output.to_string(),
             is_error: false,
+            custom: false,
         }
     }
 

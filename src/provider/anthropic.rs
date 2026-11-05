@@ -1197,6 +1197,7 @@ mod tests {
                     tool_use_id: "toolu_1".to_string(),
                     output: String::new(),
                     is_error: false,
+                    custom: false,
                 })],
             ),
         ];
@@ -1410,6 +1411,7 @@ mod tests {
                         tool_use_id: "toolu_9".to_string(),
                         output: "done".to_string(),
                         is_error: true,
+                        custom: false,
                     }),
                 ],
             ),
@@ -1442,6 +1444,7 @@ mod tests {
                 tool_use_id: "toolu_missing".to_string(),
                 output: "42".to_string(),
                 is_error: false,
+                custom: false,
             })],
         )];
         let body = encode(&request, &caps());

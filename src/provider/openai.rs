@@ -389,13 +389,20 @@ fn custom_call_arguments(input: &str) -> String {
     format!("{{\"input\":{}}}", json_str(input))
 }
 
-fn function_call_output_item(result: &ToolResult) -> Option<String> {
+fn function_call_output_item(result: &ToolResult, native: bool) -> Option<String> {
     if result.tool_use_id.is_empty() {
         eprintln!("[zed-proxy] open_ai: dropping tool result without call_id");
         return None;
     }
+    // A custom call is answered only by a custom output (official Responses
+    // pairing); the synthetic shape has no custom calls, so it stays function.
+    let kind = if result.custom && native {
+        "custom_tool_call_output"
+    } else {
+        "function_call_output"
+    };
     Some(format!(
-        "{{\"type\":\"function_call_output\",\"call_id\":{},\"output\":{}}}",
+        "{{\"type\":\"{kind}\",\"call_id\":{},\"output\":{}}}",
         json_str(&result.tool_use_id),
         json_str(&result.output)
     ))
@@ -464,7 +471,9 @@ fn input_items(request: &NeutralRequest, native: bool, supports_images: bool) ->
         for block in &message.parts {
             match block {
                 ContentBlock::ToolUse(tool) => items.extend(function_call_item(tool, native)),
-                ContentBlock::ToolResult(result) => items.extend(function_call_output_item(result)),
+                ContentBlock::ToolResult(result) => {
+                    items.extend(function_call_output_item(result, native))
+                }
                 ContentBlock::Opaque(opaque) => {
                     let ours = opaque.provider == "open_ai" || opaque.provider == "openai";
                     if native && ours {
@@ -1249,6 +1258,7 @@ mod tests {
                     tool_use_id: "call_1".to_string(),
                     output: "done".to_string(),
                     is_error: false,
+                    custom: false,
                 })],
             },
         ];
@@ -1347,6 +1357,7 @@ mod tests {
                 tool_use_id: String::new(),
                 output: "x".to_string(),
                 is_error: false,
+                custom: false,
             })],
         });
         let body = encode(&req, &caps_std());
@@ -1819,5 +1830,29 @@ mod tests {
         assert!(body.contains(
             r#"{"type":"function_call","call_id":"call_1","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}"}"#
         ));
+
+        // A custom call is answered only by a custom output (official Responses
+        // pairing); the synthetic shape keeps the function output shape.
+        let result = ToolResult {
+            tool_use_id: "call_1".to_string(),
+            output: "patched".to_string(),
+            is_error: false,
+            custom: true,
+        };
+        req.messages.push(Message {
+            role: Role::User,
+            parts: vec![ContentBlock::ToolResult(result)],
+        });
+        req.passthrough = vec![("store".to_string(), Value::Bool(true))];
+        let body = encode(&req, &caps_std());
+        assert!(body.contains(
+            r#"{"type":"custom_tool_call_output","call_id":"call_1","output":"patched"}"#
+        ));
+        assert!(!body.contains(r#"{"type":"function_call_output","call_id":"call_1""#));
+        req.passthrough.clear();
+        let body = encode(&req, &caps_std());
+        assert!(body
+            .contains(r#"{"type":"function_call_output","call_id":"call_1","output":"patched"}"#));
+        assert!(!body.contains("custom_tool_call_output"));
     }
 }

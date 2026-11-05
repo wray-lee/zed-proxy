@@ -848,6 +848,7 @@ mod tests {
             tool_use_id: id.to_string(),
             output: output.to_string(),
             is_error: false,
+            custom: false,
         })
     }
 
@@ -1183,6 +1184,7 @@ mod tests {
                         tool_use_id: "call_0000000000000001".to_string(),
                         output: "denied".to_string(),
                         is_error: true,
+                        custom: false,
                     })],
                 ),
             ],

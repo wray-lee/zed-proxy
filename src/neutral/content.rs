@@ -64,6 +64,9 @@ pub struct ToolResult {
     pub tool_use_id: String,
     pub output: String,
     pub is_error: bool,
+    /// The client echoed a Responses `custom_tool_call_output`; only the native
+    /// OpenAI shape may write that item type back (spec 42 §1.2, §4 R6).
+    pub custom: bool,
 }
 
 /// A provider-specific item that has no cross-provider meaning and may only be

@@ -271,7 +271,7 @@ fn decode_call(object: &Map<String, Value>, custom: bool) -> Option<ToolUse> {
 }
 
 /// A `function_call_output` / `custom_tool_call_output` input item.
-fn decode_result(object: &Map<String, Value>) -> Option<ToolResult> {
+fn decode_result(object: &Map<String, Value>, custom: bool) -> Option<ToolResult> {
     let id = object
         .get("call_id")
         .and_then(Value::as_str)
@@ -284,6 +284,7 @@ fn decode_result(object: &Map<String, Value>) -> Option<ToolResult> {
         tool_use_id: id.to_string(),
         output: tool_output_text(object.get("output")),
         is_error: false,
+        custom,
     })
 }
 
@@ -560,7 +561,8 @@ impl ClientDecoder for ResponsesDecoder {
                             }
                         }
                         Some("function_call_output") | Some("custom_tool_call_output") => {
-                            if let Some(result) = decode_result(object) {
+                            let custom = kind == Some("custom_tool_call_output");
+                            if let Some(result) = decode_result(object, custom) {
                                 pending_results.push(result);
                             }
                         }
@@ -1470,6 +1472,7 @@ mod tests {
                 tool_use_id: "call_1".to_string(),
                 output: "ok".to_string(),
                 is_error: false,
+                custom: false,
             })]
         );
         assert_eq!(request.tool_uses.len(), 1);
@@ -1488,6 +1491,7 @@ mod tests {
                 tool_use_id: "call_9".to_string(),
                 output: "a\n\nb".to_string(),
                 is_error: false,
+                custom: false,
             })]
         );
         assert_eq!(request.unpaired_tool_results.len(), 1);
@@ -1517,6 +1521,7 @@ mod tests {
                 tool_use_id: "call_2".to_string(),
                 output: "done".to_string(),
                 is_error: false,
+                custom: true,
             })]
         );
     }

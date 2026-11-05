@@ -153,6 +153,7 @@ fn decode_block(object: &Map<String, Value>) -> Option<ContentBlock> {
                     .get("is_error")
                     .and_then(Value::as_bool)
                     .unwrap_or(false),
+                custom: false,
             }))
         }
         // History thinking blocks are dropped on purpose (spec 41 §1.3): the
@@ -874,12 +875,14 @@ mod tests {
                 ContentBlock::ToolResult(ToolResult {
                     tool_use_id: "toolu_1".to_string(),
                     output: "A".to_string(),
-                    is_error: false
+                    is_error: false,
+                    custom: false,
                 }),
                 ContentBlock::ToolResult(ToolResult {
                     tool_use_id: "toolu_2".to_string(),
                     output: "B".to_string(),
-                    is_error: true
+                    is_error: true,
+                    custom: false,
                 }),
                 ContentBlock::Compaction("summary".to_string()),
             ]
