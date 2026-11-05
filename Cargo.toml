@@ -1,0 +1,38 @@
+[package]
+name = "zed-proxy"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Gateway that translates OpenAI and Anthropic client protocols to Zed-hosted models"
+publish = false
+
+[dependencies]
+axum = "0.8"
+base64 = "0.22"
+bytes = "1"
+futures-util = "0.3"
+# The response writer is hand-rolled (spec 16 §1, 70 §3): hyper always chunks an
+# unknown-length body and always adds `date:`, while the gateway contract is
+# `Connection: close` framing with no `Date`/`Server`. `tower` drives the axum
+# router; `http-body` exposes the body's known length.
+http-body = "1"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "stream", "json"] }
+rsa = "0.9"
+serde = { version = "1", features = ["derive"] }
+# preserve_order keeps client JSON key order intact; the gateway forwards tool
+# schemas and native Responses passthrough verbatim (spec 20 §2.2, 21 §10).
+# Pinned to the patch that exposes preserve_order without the `foldhash`
+# dependency, which is not in the offline registry.
+serde_json = { version = "=1.0.151", features = ["preserve_order"] }
+sha2 = "0.10"
+subtle = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "fs", "io-util"] }
+tower = { version = "0.5", features = ["util"] }
+url = "2"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "s"
+strip = true

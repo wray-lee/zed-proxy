@@ -4,122 +4,194 @@
     {
       "id": "gpt-5.6",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "claude-sonnet-5-5",
       "object": "model",
-      "owned_by": "anthropic"
+      "owned_by": "anthropic",
+      "context_length": 1000000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "claude-sonnet-5",
       "object": "model",
-      "owned_by": "anthropic"
+      "owned_by": "anthropic",
+      "context_length": 1000000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "claude-sonnet-4-6",
       "object": "model",
-      "owned_by": "anthropic"
+      "owned_by": "anthropic",
+      "context_length": 1000000,
+      "max_output_tokens": 64000,
+      "max_completion_tokens": 64000
     },
     {
       "id": "claude-sonnet-4-5",
       "object": "model",
-      "owned_by": "anthropic"
+      "owned_by": "anthropic",
+      "context_length": 200000,
+      "max_output_tokens": 8192,
+      "max_completion_tokens": 8192
     },
     {
       "id": "claude-haiku-5-5",
       "object": "model",
-      "owned_by": "anthropic"
+      "owned_by": "anthropic",
+      "context_length": 100000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "claude-haiku-4-5",
       "object": "model",
-      "owned_by": "anthropic"
+      "owned_by": "anthropic",
+      "context_length": 200000,
+      "max_output_tokens": 64000,
+      "max_completion_tokens": 64000
     },
     {
       "id": "gpt-6.1-sol",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-6-sol",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-6-luna",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-5.6-sol",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-5.6-terra",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-5.6-luna",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-5.5",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-5.4",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-5.3-codex",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-5.2",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-5-mini",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gpt-5-nano",
       "object": "model",
-      "owned_by": "open_ai"
+      "owned_by": "open_ai",
+      "context_length": 400000,
+      "max_output_tokens": 128000,
+      "max_completion_tokens": 128000
     },
     {
       "id": "gemini-4-argon",
       "object": "model",
-      "owned_by": "google"
+      "owned_by": "google",
+      "context_length": 1048576,
+      "max_output_tokens": 65536,
+      "max_completion_tokens": 65536
     },
     {
       "id": "gemini-3.1-pro-preview",
       "object": "model",
-      "owned_by": "google"
+      "owned_by": "google",
+      "context_length": 200000,
+      "max_output_tokens": 65535,
+      "max_completion_tokens": 65535
     },
     {
       "id": "gemini-3.8-flash",
       "object": "model",
-      "owned_by": "google"
+      "owned_by": "google",
+      "context_length": 1048576,
+      "max_output_tokens": 65535,
+      "max_completion_tokens": 65535
     },
     {
       "id": "gemini-3.5-flash",
       "object": "model",
-      "owned_by": "google"
+      "owned_by": "google",
+      "context_length": 1048576,
+      "max_output_tokens": 65535,
+      "max_completion_tokens": 65535
     },
     {
       "id": "gemini-3-flash",
       "object": "model",
-      "owned_by": "google"
+      "owned_by": "google",
+      "context_length": 1048576,
+      "max_output_tokens": 65535,
+      "max_completion_tokens": 65535
     }
   ],
   "models": [
