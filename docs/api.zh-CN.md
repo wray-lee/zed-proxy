@@ -11,7 +11,7 @@
 | POST | `/v1/messages` | 需要 | Anthropic Messages，流式与非流式 |
 | 任意 | `/v1/messages/count_tokens` | 需要 | 不做统计，直接返回 `{"input_tokens":0}` |
 | 任意 | `/api/event_logging/batch` | 不需要 | 接收客户端事件批次，返回 `{"status":"ok"}` |
-| GET | `/v1/models` | 需要 | OpenAI 格式的模型列表 |
+| GET | `/v1/models` | 需要 | Zed 的完整模型目录（OpenAI 格式），并附带 Codex 的 `models` 目录。缓存一小时；除 Zed 标记为禁用的模型外不做任何过滤，并额外提供 Sol 的别名 `gpt-5.6`。 |
 | GET | `/health` | 不需要 | 存活探针，返回 `{"status":"ok"}` |
 | 任意 | `/` | 不需要 | Web 管理页 |
 | GET | `/zed/accounts` | 需要 | 账号列表与调度状态 |

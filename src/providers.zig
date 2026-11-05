@@ -1,9 +1,13 @@
 const std = @import("std");
+const catalog = @import("catalog.zig");
 
-/// Map Claude Code model names to Zed-compatible names.
-/// Every Claude request routes to claude-sonnet-5 and every GPT request to a
-/// gpt-5.6 variant, so clients that can't pick models still land on 5.6.
+/// Map client model names to Zed-compatible names. A slug Zed's catalog lists
+/// is forwarded unchanged. Only a name Zed does not serve (a Claude Code
+/// default such as `claude-3-5-sonnet-*`, `gpt-4o`) falls back to
+/// claude-sonnet-5 or a gpt-5.6 variant, so clients that can't pick models
+/// still land on a working one.
 pub fn normalizeModelName(name: []const u8) []const u8 {
+    if (catalog.has(name)) return name;
     if (std.mem.startsWith(u8, name, "gpt-5.6-sol")) return "gpt-5.6-sol";
     if (std.mem.startsWith(u8, name, "gpt-5.6-terra")) return "gpt-5.6-terra";
     if (std.mem.startsWith(u8, name, "gpt-5.6-luna")) return "gpt-5.6-luna";
@@ -542,7 +546,7 @@ const ANTHROPIC_MAX_OUTPUT_TOKENS: i64 = 128000;
 /// this model class ("`temperature` is deprecated for this model"), so they are
 /// dropped rather than forwarded into a guaranteed 400.
 fn anthropicRejectsSamplingParams(model: []const u8) bool {
-    return std.mem.startsWith(u8, model, "claude-sonnet-5");
+    return std.mem.startsWith(u8, model, "claude-sonnet-5") or std.mem.startsWith(u8, model, "claude-haiku-5");
 }
 
 /// Anthropic rejects stop sequences that are entirely whitespace. Drop those
@@ -633,7 +637,7 @@ fn writeAnthropicTools(w: *std.io.Writer, tools: std.json.Value) !void {
 fn buildAnthropicRequest(allocator: std.mem.Allocator, w: *std.io.Writer, parsed: std.json.Value, model: []const u8, is_anthropic: bool) !void {
     try w.print("\"model\":\"{s}\",", .{model});
     const max_tokens: i64 = switch (parsed.object.get("max_tokens") orelse std.json.Value{ .null = {} }) {
-        .integer => |value| @min(value, ANTHROPIC_MAX_OUTPUT_TOKENS),
+        .integer => |value| @min(value, catalog.maxOutputTokens(model) orelse ANTHROPIC_MAX_OUTPUT_TOKENS),
         else => 8192,
     };
     try w.print("\"max_tokens\":{d},", .{max_tokens});

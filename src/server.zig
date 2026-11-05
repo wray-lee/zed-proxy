@@ -6,6 +6,7 @@ const proxy = @import("proxy.zig");
 const providers = @import("providers.zig");
 const account_status = @import("account_status.zig");
 const orb_quota = @import("orb_quota.zig");
+const catalog = @import("catalog.zig");
 const stream = @import("stream.zig");
 const socket = @import("socket.zig");
 const gateway_auth = @import("gateway_auth.zig");
@@ -70,17 +71,10 @@ pub fn buildProbeBody(allocator: std.mem.Allocator, model: []const u8) ![]const 
     );
 }
 
-/// `/v1/models` advertises the local slug catalog embedded in models.json; that
-/// is the same list the WebUI shows, so a probe accepts exactly those slugs.
+/// A probe accepts any slug the upstream catalog lists (plus the local `gpt-5.6`
+/// alias), which is the same list `/v1/models` and the WebUI show.
 pub fn isKnownProbeModel(slug: []const u8) bool {
-    // An arena keeps this callable before `run` sets `global_allocator`, and
-    // page_allocator's free is a no-op, so the tree must be released in one go.
-    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    defer arena_state.deinit();
-    const parsed = std.json.parseFromSlice(std.json.Value, arena_state.allocator(), @embedFile("models.json"), .{}) catch return false;
-    defer parsed.deinit();
-    if (parsed.value != .object) return false;
-    return catalogHasSlug(parsed.value, slug);
+    return catalog.has(slug) or std.mem.eql(u8, slug, catalog.SOL_ALIAS);
 }
 
 /// Match `models[].slug` (Zed's own catalog shape) or `data[].id` (the OpenAI
@@ -878,6 +872,7 @@ fn handleModels() !Response {
         return .{ .status = 200, .body = @embedFile("models.json") };
     };
     defer global_allocator.free(raw);
+    catalog.refreshFromZed(raw);
 
     // Convert Zed format to OpenAI format
     const openai = convertZedModelsToOpenAI(global_allocator, raw) catch {
@@ -902,16 +897,82 @@ fn handleModels() !Response {
     return .{ .status = 200, .body = openai };
 }
 
-/// Models advertised on /v1/models (all requests are normalized onto these).
-fn isExposedModel(id: []const u8) bool {
-    const exposed = [_][]const u8{ "gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "claude-sonnet-5", "gemini-4-argon" };
-    for (exposed) |m| if (std.mem.eql(u8, id, m)) return true;
-    return false;
+const EffortLevel = struct { value: []const u8, name: []const u8, is_default: bool };
+
+fn writeJsonString(w: *std.io.Writer, text: []const u8) !void {
+    try std.json.Stringify.encodeJsonString(text, .{}, w);
 }
 
+/// The `supported_effort_levels` of one Zed model. Entries without a string
+/// value are skipped.
+fn collectEffortLevels(allocator: std.mem.Allocator, model: std.json.ObjectMap) ![]EffortLevel {
+    var out: std.ArrayList(EffortLevel) = .empty;
+    errdefer out.deinit(allocator);
+    const list = model.get("supported_effort_levels") orelse return out.toOwnedSlice(allocator);
+    if (list != .array) return out.toOwnedSlice(allocator);
+    for (list.array.items) |item| {
+        if (item != .object) continue;
+        const value = switch (item.object.get("value") orelse continue) {
+            .string => |s| s,
+            else => continue,
+        };
+        const name = if (item.object.get("name")) |n| (if (n == .string) n.string else value) else value;
+        const is_default = if (item.object.get("is_default")) |d| (d == .bool and d.bool) else false;
+        try out.append(allocator, .{ .value = value, .name = name, .is_default = is_default });
+    }
+    return out.toOwnedSlice(allocator);
+}
+
+/// Gemini reports `LOW`, the others `low`; the catalog uses one spelling.
+fn writeLowerJsonString(w: *std.io.Writer, allocator: std.mem.Allocator, text: []const u8) !void {
+    const lower = try std.ascii.allocLowerString(allocator, text);
+    defer allocator.free(lower);
+    try writeJsonString(w, lower);
+}
+
+/// One entry of the Codex-style `models` catalog, built from a Zed model.
+fn writeCodexModel(w: *std.io.Writer, allocator: std.mem.Allocator, slug: []const u8, model: std.json.ObjectMap, priority: usize) !void {
+    const display = if (model.get("display_name")) |d| (if (d == .string) d.string else slug) else slug;
+    const levels = try collectEffortLevels(allocator, model);
+    defer allocator.free(levels);
+
+    try w.writeAll("{\"slug\":");
+    try writeJsonString(w, slug);
+    try w.writeAll(",\"display_name\":");
+    try writeJsonString(w, display);
+    try w.writeAll(",\"description\":");
+    const description = try std.fmt.allocPrint(allocator, "Zed - {s}", .{display});
+    defer allocator.free(description);
+    try writeJsonString(w, description);
+    for (levels) |level| if (level.is_default) {
+        try w.writeAll(",\"default_reasoning_level\":");
+        try writeLowerJsonString(w, allocator, level.value);
+        break;
+    };
+    try w.writeAll(",\"supported_reasoning_levels\":[");
+    for (levels, 0..) |level, i| {
+        if (i > 0) try w.writeAll(",");
+        try w.writeAll("{\"effort\":");
+        try writeLowerJsonString(w, allocator, level.value);
+        try w.writeAll(",\"description\":");
+        try writeJsonString(w, level.name);
+        try w.writeAll("}");
+    }
+    try w.print("],\"shell_type\":\"shell_command\",\"visibility\":\"list\",\"supported_in_api\":true,\"priority\":{d}}}", .{priority});
+}
+
+fn isDisabledModel(model: std.json.ObjectMap) bool {
+    const flag = model.get("is_disabled") orelse return false;
+    return flag == .bool and flag.bool;
+}
+
+/// Zed's catalog as the OpenAI list plus the Codex `models` catalog, with
+/// nothing filtered out except models Zed marks disabled. Zed lists only the
+/// concrete GPT-5.6 variants, so the bare `gpt-5.6` alias for Sol is added.
 fn convertZedModelsToOpenAI(allocator: std.mem.Allocator, raw: []const u8) ![]const u8 {
     const parsed = try std.json.parseFromSlice(std.json.Value, allocator, raw, .{});
     defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidFormat;
 
     const models = switch (parsed.value.object.get("models") orelse return error.InvalidFormat) {
         .array => |a| a,
@@ -922,22 +983,22 @@ fn convertZedModelsToOpenAI(allocator: std.mem.Allocator, raw: []const u8) ![]co
     errdefer buf.deinit();
     const w = &buf.writer;
 
-    try w.writeAll("{\"object\":\"list\",\"data\":[");
-    var first = true;
-    var has_bare_gpt56 = false;
-    var has_gpt56_sol = false;
+    var sol: ?std.json.ObjectMap = null;
+    var has_alias = false;
     for (models.items) |model| {
         if (model != .object) continue;
         const id = switch (model.object.get("id") orelse continue) {
-            .string => |value| value,
+            .string => |s| s,
             else => continue,
         };
-        if (std.mem.eql(u8, id, "gpt-5.6")) has_bare_gpt56 = true;
-        if (std.mem.eql(u8, id, "gpt-5.6-sol")) has_gpt56_sol = true;
+        if (std.mem.eql(u8, id, catalog.SOL_ALIAS)) has_alias = true;
+        if (std.mem.eql(u8, id, "gpt-5.6-sol")) sol = model.object;
     }
-    // Bare gpt-5.6 is a stable local alias for Sol. Advertise it even though
-    // Zed's upstream catalog lists only the concrete Sol/Terra/Luna variants.
-    if (has_gpt56_sol and !has_bare_gpt56) {
+    const add_alias = sol != null and !has_alias;
+
+    try w.writeAll("{\"object\":\"list\",\"data\":[");
+    var first = true;
+    if (add_alias) {
         try w.writeAll("{\"id\":\"gpt-5.6\",\"object\":\"model\",\"owned_by\":\"open_ai\"}");
         first = false;
     }
@@ -951,20 +1012,41 @@ fn convertZedModelsToOpenAI(allocator: std.mem.Allocator, raw: []const u8) ![]co
             .string => |s| s,
             else => continue,
         };
-
-        // Only expose the 5.6-era models we route to.
-        if (!isExposedModel(id)) continue;
+        if (isDisabledModel(model.object)) continue;
 
         if (!first) try w.writeAll(",");
         first = false;
-        try w.print("{{\"id\":\"{s}\",\"object\":\"model\",\"owned_by\":\"{s}\"}}", .{ id, provider });
+        try w.writeAll("{\"id\":");
+        try writeJsonString(w, id);
+        try w.writeAll(",\"object\":\"model\",\"owned_by\":");
+        try writeJsonString(w, provider);
+        try w.writeAll("}");
     }
+
     // Codex Desktop's models manager requires a top-level "models" catalog
     // (it fails the whole turn with `missing field \`models\`` otherwise).
     // OpenAI-style clients ignore the extra field, so both formats coexist.
-    try w.writeAll("],\"models\":");
-    try w.writeAll(std.mem.trim(u8, @embedFile("codex_models.json"), " \n\r\t"));
-    try w.writeAll("}");
+    try w.writeAll("],\"models\":[");
+    var priority: usize = 1;
+    first = true;
+    if (add_alias) {
+        try writeCodexModel(w, allocator, catalog.SOL_ALIAS, sol.?, priority);
+        priority += 1;
+        first = false;
+    }
+    for (models.items) |model| {
+        if (model != .object) continue;
+        const id = switch (model.object.get("id") orelse continue) {
+            .string => |s| s,
+            else => continue,
+        };
+        if (isDisabledModel(model.object)) continue;
+        if (!first) try w.writeAll(",");
+        first = false;
+        try writeCodexModel(w, allocator, id, model.object, priority);
+        priority += 1;
+    }
+    try w.writeAll("]}");
     return try buf.toOwnedSlice();
 }
 

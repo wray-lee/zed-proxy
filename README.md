@@ -74,7 +74,7 @@ curl http://127.0.0.1:8001/v1/chat/completions   -H "Authorization: Bearer $ZED_
 | OpenAI Responses (no Gemini) | `POST /v1/responses` |
 | Anthropic Messages | `POST /v1/messages` |
 
-Streaming and non-streaming are supported on all three. Models come from Zed's catalogue, including `gpt-5.6`, `claude-sonnet-5` and `gemini-4-argon`; the full route list is in [API endpoints](docs/api.md).
+Streaming and non-streaming are supported on all three. Models come from Zed's catalogue, all of them, served as listed (GPT, Claude and Gemini families); the full route list is in [API endpoints](docs/api.md).
 
 ## Documentation
 

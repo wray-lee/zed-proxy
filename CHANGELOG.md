@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog v1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-05
+
+### Fixed
+
+- `/v1/models`, the Models page and the live-check selector now serve Zed's whole
+  catalogue (23 models) instead of a hardcoded list of seven. Only models Zed
+  marks disabled are left out.
+- A requested slug that Zed lists is forwarded unchanged. Previously every
+  `claude*` name became `claude-sonnet-5` and every other `gpt-*` name became
+  `gpt-5.6-sol`; now only names Zed does not serve fall back that way.
+- The Anthropic `max_tokens` cap follows the model's own `max_output_tokens`
+  from the catalogue, and `claude-haiku-5*` drops sampling parameters like Sonnet 5.
+- The embedded fallback catalogue (used before the first fetch or when Zed is
+  unreachable) now holds the full list too.
+
 ## [0.2.0] - 2026-11-05
 
 ### Added

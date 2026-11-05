@@ -11,7 +11,7 @@ All routes are handled in `src/server.zig`. "Gateway key" means the request must
 | POST | `/v1/messages` | yes | Anthropic Messages, streaming and non-streaming |
 | any | `/v1/messages/count_tokens` | yes | Returns `{"input_tokens":0}` without counting |
 | any | `/api/event_logging/batch` | no | Accepts client event batches and returns `{"status":"ok"}` |
-| GET | `/v1/models` | yes | Model list in OpenAI format |
+| GET | `/v1/models` | yes | Zed's full model catalogue in OpenAI format, plus a Codex `models` catalogue. Cached for an hour; nothing is filtered except models Zed marks disabled. The bare `gpt-5.6` alias for Sol is added. |
 | GET | `/health` | no | Liveness probe, returns `{"status":"ok"}` |
 | any | `/` | no | Web management page |
 | GET | `/zed/accounts` | yes | Accounts plus scheduler state |

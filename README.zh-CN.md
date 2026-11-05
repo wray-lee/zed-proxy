@@ -74,7 +74,7 @@ curl http://127.0.0.1:8001/v1/chat/completions   -H "Authorization: Bearer $ZED_
 | OpenAI Responses（不含 Gemini） | `POST /v1/responses` |
 | Anthropic Messages | `POST /v1/messages` |
 
-三者都支持流式与非流式。模型来自 Zed 的目录，包括 `gpt-5.6`、`claude-sonnet-5`、`gemini-4-argon`；完整路由见 [API 端点](docs/api.zh-CN.md)。
+三者都支持流式与非流式。模型来自 Zed 的目录，全部原样提供（GPT、Claude、Gemini 系列）；完整路由见 [API 端点](docs/api.zh-CN.md)。
 
 ## 文档
 

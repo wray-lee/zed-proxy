@@ -11,7 +11,7 @@
 | `src/main.zig` | 入口。解析子命令（`serve`、`login`、`accounts`），应用 `ZED_DATA_DIR`，读取 `ZED_API_HOST` 和 `ZED_API_PORT`，启动服务。 |
 | `src/server.zig` | HTTP 服务：每连接一个线程、请求解析、鉴权关卡、路由表、账号与登录处理、模型列表、内嵌网页。 |
 | `src/gateway_auth.zig` | 网关 key 加载（`ZED_API_KEY`、`ZED_API_KEY_FILE`、`<data>/api_key`）、常量时间比较、`Authorization` 与 `x-api-key` 解析、受保护路径前缀、回环地址判断，以及 fail-closed 绑定策略。 |
-| `src/providers.zig` | 把 OpenAI Chat、OpenAI Responses、Anthropic Messages 请求转换成 Zed 的 `completions` 载荷，并把响应转换回来。包含模型名规范化表、推理强度规则、GPT 输出预算下限，以及 Gemini 的 `thinkingLevel` 与 `thought` 处理。 |
+| `src/providers.zig` | 把 OpenAI Chat、OpenAI Responses、Anthropic Messages 请求转换成 Zed 的 `completions` 载荷，并把响应转换回来。包含兜底的模型名表（Zed 目录里有的 slug 原样转发，只有未知名称才会被改写）、推理强度规则、GPT 输出预算下限，以及 Gemini 的 `thinkingLevel` 与 `thought` 处理。 |
 | `src/proxy.zig` | 面向 `cloud.zed.dev/completions` 的上游传输；Zed 客户端头常量（`ZED_VERSION`、user agent、状态消息头、可选的 `ZED_SYSTEM_ID`）；代理发现（`HTTPS_PROXY`、`ALL_PROXY`、Windows 系统代理）；上游失败解析。 |
 | `src/zed.zig` | 从 `cloud.zed.dev/client/llm_tokens` 换取令牌、拉取模型目录、从 `client/users/me` 拉取账单、解析 JWT 过期时间，以及把令牌、转换、传输、响应转换串起来的各协议入口。 |
 | `src/stream.zig` | 流式链路。启动 `curl`，解析上游事件流，按客户端协议输出 SSE，同时负责流式请求的账号 failover 循环。 |
