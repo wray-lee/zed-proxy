@@ -2,7 +2,7 @@
 name = "zed-proxy"
 version = "0.3.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.88"
 description = "Gateway that translates OpenAI and Anthropic client protocols to Zed-hosted models"
 publish = false
 

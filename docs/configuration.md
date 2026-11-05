@@ -14,6 +14,7 @@ Configuration is read once at startup from the environment; changing an environm
 | `ZED_LOGIN_PORT` | `58443` | Callback port embedded in the paste login authorization URL. Nothing listens on it in that mode. Empty means the default; an invalid value makes the login endpoint answer 400. |
 | `ZED_SYSTEM_ID` | unset | `x-zed-system-id` sent when minting LLM tokens. Unset or empty means the header is omitted. |
 | `ZED_UPSTREAM_BASE` | `https://cloud.zed.dev` | Base URL for the four Zed endpoints (`completions`, `client/llm_tokens`, `models`, `client/users/me`). Must be `http(s)://host[:port][/prefix]`; a trailing `/` is stripped and the value becomes the prefix. Anything else fails startup. It does not affect `zed.dev` (the login page). |
+| `ZED_ORB_BASE` | unset | Debug builds only: overrides the Orb portal base URL (`https://portal.withorb.com`) so the credit-balance test hook never touches the real portal. A release binary ignores it and always uses the fixed portal base. It is not a supported deployment setting. |
 | `HTTPS_PROXY`, `https_proxy`, `ALL_PROXY`, `all_proxy` | unset | Outbound HTTP proxy for every outbound request. Tried in that order; empty and unparseable values are skipped. A URI without a port uses `7890`. Parsed once and cached. |
 | `RUST_LOG` | unset | Reserved: the current build writes fixed-prefix lines to stderr and does not read a log filter yet. |
 

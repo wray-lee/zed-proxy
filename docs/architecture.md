@@ -31,7 +31,7 @@ Provider dispatch reads the `provider` field of the model from Zed's catalogue. 
 | File | Role |
 | --- | --- |
 | `src/main.rs` | Entry point. Parses the subcommand (`serve`, `login`, `accounts`, `healthcheck`), prints usage, and hands off. |
-| `src/config.rs` | Environment parsing and validation: bind host and port, login port, data directory, upstream base URL, outbound proxy, `ZED_SYSTEM_ID`. Pure helpers so the rules are testable without mutating the process environment. |
+| `src/config.rs` | Environment parsing and validation: bind host and port, login port, data directory, upstream base URL, outbound proxy. Pure helpers so the rules are testable without mutating the process environment. |
 | `src/http/server.rs` | Listener and connection loop. Reads one request head plus its `Content-Length` body, dispatches through the router, and writes the response with an exact `Content-Length` for buffered bodies and close delimiting for streams. `axum::serve` is not used because hyper always chunks unknown-length bodies and always adds `Date`. |
 | `src/http/router.rs` | Route table and handlers, including the entry guard (authentication → 16 MiB limit → `OPTIONS` handling → common CORS/Connection headers). |
 | `src/http/auth.rs` | Gateway key loading (`ZED_API_KEY`, `ZED_API_KEY_FILE`, `<data>/api_key`), SHA-256 constant-time comparison, `Authorization`/`x-api-key` parsing, protected prefixes, loopback detection, fail-closed bind decision and the refusal message. |
@@ -43,8 +43,8 @@ Provider dispatch reads the `provider` field of the model from Zed's catalogue. 
 | `src/provider/google_schema.rs` | Cleans a client JSON Schema into the Gemini subset (allowed keys, `nullable` handling, unsupported constructs) and is the only caller of that dialect. |
 | `src/provider/mod.rs` | Factory (`encoder_for`) and the tiny shared envelope helpers. |
 | `src/upstream/client.rs` | The only module that talks to the network: `reqwest` with rustls, four endpoints, timeouts (120 s non-stream, 300 s stream, 15 s meta), size caps (4 MiB / 1 MiB), proxy from `HTTPS_PROXY`/`ALL_PROXY`, `Zed/1.8.2` user agent, and Zed client header constants. Also classifies `status.failed` wrappers and HTTP statuses. |
-| `src/upstream/token.rs` | Per-account LLM token cache and exchange against `client/llm_tokens`, with a 60-second refresh margin; `organization_id` selection from `client/users/me`. |
-| `src/upstream/models.rs`, `jwt.rs` | `/models` pull and catalogue rebuild; JWT payload/`exp` inspection (signature never verified) used for cache expiry. |
+| `src/upstream/token.rs` | Per-account LLM token cache and exchange against `client/llm_tokens`, with a 60-second refresh margin; `organization_id` selection from `client/users/me`; `ZED_SYSTEM_ID` parsing (sent only when non-empty). |
+| `src/upstream/models.rs`, `jwt.rs` | `/models` pull and catalogue rebuild; JWT payload/`exp` inspection (signature never verified) used for cache expiry and for the verbatim `/zed/usage` body. |
 | `src/catalog.rs` | The slug → capability registry. Built from Zed's `/models` response or the embedded `src/models.json`; produces the `/v1/models` payload (OpenAI `data[]` plus Codex `models[]`), knows the `gpt-5.6` alias, the one model-name normalization table and the one-hour list cache with its 5-second refresh window. |
 | `src/accounts/store.rs` | Account pool: tolerant `accounts.json` loading, atomic 0600 writes (temp file + rename), active account persistence, cooldown/attempt state, try order and success/failure bookkeeping. |
 | `src/accounts/status.rs` | Scheduler rows for `/zed/accounts`, the passive token/billing check for `/zed/accounts/status`, and both fixed-shape response bodies. |

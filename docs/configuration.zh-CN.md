@@ -14,6 +14,7 @@
 | `ZED_LOGIN_PORT` | `58443` | 拼接进粘贴登录授权链接的回调端口。该模式下没有进程监听它。空值取默认；非法值使登录接口返回 400。 |
 | `ZED_SYSTEM_ID` | 未设 | 换取 LLM 令牌时发送的 `x-zed-system-id`。未设或空串则不发送该头。 |
 | `ZED_UPSTREAM_BASE` | `https://cloud.zed.dev` | 四个 Zed 端点（`completions`、`client/llm_tokens`、`models`、`client/users/me`）的基址。必须是 `http(s)://host[:port][/prefix]`；去掉结尾 `/` 后作为前缀。其它值导致启动失败。它不影响 `zed.dev`（登录页）。 |
+| `ZED_ORB_BASE` | 未设 | 仅调试构建：覆盖 Orb 门户基址（`https://portal.withorb.com`），让余额功能的测试钩子不访问真实门户。release 二进制忽略它，始终使用固定的门户基址。它不是受支持的部署配置。 |
 | `HTTPS_PROXY`、`https_proxy`、`ALL_PROXY`、`all_proxy` | 未设 | 所有出站请求使用的 HTTP 代理，按该顺序尝试；空值与不可解析值跳过。URI 未带端口时用 `7890`。只解析一次并缓存。 |
 | `RUST_LOG` | 未设 | 预留：当前构建以固定前缀写 stderr，尚未读取日志过滤表达式。 |
 

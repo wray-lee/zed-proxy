@@ -13,7 +13,7 @@ cargo build --release                           # target/release/zed-proxy
 docker build -t zed-proxy:local .
 ```
 
-Rust 1.99 or newer is required (the crate is edition 2021, MSRV 1.75). The Web UI must be built once with `npm ci && npm run build` inside `webui/` before `cargo build`, because `src/http/static.rs` embeds `webui/dist/index.html` with `include_bytes!` and `build.rs` fails the build when the file is missing. The Web UI needs Node.js 22.
+Built and tested with Rust 1.99; the crate's MSRV is 1.88 (edition 2021; `icu_provider` 2.4 in the lockfile needs it). The Web UI must be built once with `npm ci && npm run build` inside `webui/` before `cargo build`, because `src/http/static.rs` embeds `webui/dist/index.html` with `include_bytes!` and `build.rs` fails the build when the file is missing. The Web UI needs Node.js 22.
 
 Only Linux and containers are supported. The release build is a static musl binary:
 

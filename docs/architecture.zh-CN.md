@@ -31,7 +31,7 @@ provider 分发读取 Zed 目录中该模型的 `provider` 字段。只有目录
 | 文件 | 职责 |
 | --- | --- |
 | `src/main.rs` | 入口。解析子命令（`serve`、`login`、`accounts`、`healthcheck`），打印用法并转交。 |
-| `src/config.rs` | 环境解析与校验：监听地址与端口、登录端口、数据目录、上游基址、出站代理、`ZED_SYSTEM_ID`。纯函数实现，便于在不改进程环境的前提下测试规则。 |
+| `src/config.rs` | 环境解析与校验：监听地址与端口、登录端口、数据目录、上游基址、出站代理。纯函数实现，便于在不改进程环境的前提下测试规则。 |
 | `src/http/server.rs` | 监听与连接循环。读取一个请求头及其 `Content-Length` 请求体，经路由分发，缓冲响应写精确 `Content-Length`，流式响应以连接关闭定界。不使用 `axum::serve`，因为 hyper 对未知长度响应必然 chunked 且必然加 `Date`。 |
 | `src/http/router.rs` | 路由表与各 handler，包括入口守卫（鉴权 → 16 MiB 上限 → `OPTIONS` 处理 → 公共 CORS/Connection 头）。 |
 | `src/http/auth.rs` | 网关 key 加载（`ZED_API_KEY`、`ZED_API_KEY_FILE`、`<data>/api_key`）、SHA-256 常量时间比较、`Authorization`/`x-api-key` 解析、受保护前缀、回环判断、fail-closed 绑定决策与拒绝文案。 |
@@ -43,8 +43,8 @@ provider 分发读取 Zed 目录中该模型的 `provider` 字段。只有目录
 | `src/provider/google_schema.rs` | 把客户端 JSON Schema 清洗为 Gemini 子集（允许键、`nullable` 处理、不支持的结构），是该方言唯一的实现处。 |
 | `src/provider/mod.rs` | 工厂（`encoder_for`）与极小的公共信封辅助函数。 |
 | `src/upstream/client.rs` | 唯一访问网络的模块：`reqwest` + rustls、四个端点、超时（非流式 120 秒、流式 300 秒、元数据 15 秒）、体积上限（4 MiB / 1 MiB）、`HTTPS_PROXY`/`ALL_PROXY` 代理、`Zed/1.8.2` user agent，以及 Zed 客户端头常量。同时负责 `status.failed` 包装与 HTTP 状态的分类。 |
-| `src/upstream/token.rs` | 每账号 LLM 令牌缓存与 `client/llm_tokens` 换取，提前 60 秒刷新；从 `client/users/me` 选择 `organization_id`。 |
-| `src/upstream/models.rs`、`jwt.rs` | `/models` 拉取与目录重建；JWT 载荷与 `exp` 读取（不验签）用于缓存过期。 |
+| `src/upstream/token.rs` | 每账号 LLM 令牌缓存与 `client/llm_tokens` 换取，提前 60 秒刷新；从 `client/users/me` 选择 `organization_id`；解析 `ZED_SYSTEM_ID`（非空时才发送）。 |
+| `src/upstream/models.rs`、`jwt.rs` | `/models` 拉取与目录重建；JWT 载荷与 `exp` 读取（不验签）用于缓存过期与 `/zed/usage` 的原文响应体。 |
 | `src/catalog.rs` | slug → 能力注册表。由 Zed 的 `/models` 响应或内嵌 `src/models.json` 构建；生成 `/v1/models` 载荷（OpenAI `data[]` 加 Codex `models[]`）；包含 `gpt-5.6` 别名、唯一的模型名归一化表，以及一小时列表缓存与 5 秒刷新窗口。 |
 | `src/accounts/store.rs` | 账号池：宽容加载 `accounts.json`、原子 0600 写入（临时文件 + rename）、当前账号持久化、冷却/尝试状态、尝试顺序与成功失败记账。 |
 | `src/accounts/status.rs` | `/zed/accounts` 的调度行、`/zed/accounts/status` 的被动令牌/账单检查，以及两份固定形状的响应体。 |

@@ -4,7 +4,7 @@ Thanks for taking the time to contribute to ZedProxy.
 
 ## Prerequisites
 
-- Rust 1.99 or newer (edition 2021, MSRV 1.75). Only Linux and containers are supported; there is no Windows or macOS build.
+- Built and tested with Rust 1.99; the crate's MSRV is 1.88 (edition 2021; `icu_provider` 2.4 in the lockfile needs it). Only Linux and containers are supported; there is no Windows or macOS build.
 - Node.js 22 or newer (the Web UI build)
 - Docker, only if you want to build the container image
 
