@@ -6,11 +6,13 @@ import { renderAccounts } from './pages/accounts'
 import { renderEndpoints } from './pages/endpoints'
 import { renderHealth } from './pages/health'
 import { renderIntegration } from './pages/integration'
+import { renderModels } from './pages/models'
 
-type PageId = 'accounts' | 'health' | 'endpoints' | 'integration'
+type PageId = 'accounts' | 'models' | 'health' | 'endpoints' | 'integration'
 
 const PAGE_TITLES: Record<PageId, string> = {
   accounts: t('账号中心', 'Account center'),
+  models: t('模型', 'Models'),
   health: t('服务检查', 'Health check'),
   endpoints: t('接口清单', 'Endpoints'),
   integration: t('客户端接入', 'Client setup'),
@@ -55,6 +57,10 @@ app.innerHTML = `
             <span>${t('账号中心', 'Account center')}</span>
             <span class="nav-badge" id="acc-count">0</span>
           </button>
+          <button class="nav-item" data-page="models" type="button">
+            <span class="nav-icon">${icons.layers}</span>
+            <span>${t('模型', 'Models')}</span>
+          </button>
           <button class="nav-item" data-page="health" type="button">
             <span class="nav-icon">${icons.activity}</span>
             <span>${t('服务检查', 'Health check')}</span>
@@ -98,6 +104,7 @@ app.innerHTML = `
 
       <main class="page-stage">
         <section class="page active" id="page-accounts"></section>
+        <section class="page" id="page-models"></section>
         <section class="page" id="page-health"></section>
         <section class="page" id="page-endpoints"></section>
         <section class="page" id="page-integration"></section>
@@ -183,6 +190,7 @@ async function refreshServiceState() {
 }
 
 renderAccounts()
+renderModels()
 renderHealth()
 renderEndpoints()
 renderIntegration()

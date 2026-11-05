@@ -20,6 +20,7 @@ const ENDPOINTS: EndpointDefinition[] = [
   { method: 'GET', path: '/zed/accounts/status', description: t('被动检查全部账号的令牌、套餐和额度', 'Passively checks tokens, plans and quota for all accounts'), group: 'accounts' },
   { method: 'POST', path: '/zed/accounts/health', description: t('对单个或全部账号执行低成本模型实测', 'Runs a low-cost live model check on one or all accounts'), group: 'accounts' },
   { method: 'POST', path: '/zed/accounts/switch', description: t('切换当前优先调度账号', 'Switches the preferred scheduling account'), group: 'accounts' },
+  { method: 'POST', path: '/zed/accounts/orb', description: t('保存或清除账号的 Orb 余额链接', 'Saves or clears an account Orb balance link'), group: 'accounts' },
   { method: 'GET', path: '/zed/usage', description: t('读取当前账号的套餐与用量信息', 'Reads plan and usage info for the current account'), group: 'accounts' },
   { method: 'GET', path: '/zed/billing', description: t('读取当前账号的 Zed 账单响应', 'Reads the Zed billing response for the current account'), group: 'accounts' },
   { method: 'POST', path: '/zed/login', description: t('启动 GitHub OAuth 登录流程', 'Starts the GitHub OAuth login flow'), group: 'accounts' },

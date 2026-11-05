@@ -43,10 +43,17 @@ pub const DEAD_CREDENTIAL_COOLDOWN_S: i64 = 3600;
 // first entry in accounts.json, which may be a dead one.
 const ACTIVE_ACCOUNT_FILE = "active_account.txt";
 
+// Temporary sibling for the setOrbUrl read-modify-write, renamed over the
+// original once written.
+const ACCOUNTS_TMP_FILE = "accounts.json.tmp";
+
 pub const Account = struct {
     name: []const u8,
     user_id: []const u8,
     credential_json: []const u8,
+    // Optional Orb portal link with a bearer token in its query string. It is
+    // credential-equivalent, so it is never logged or returned by the API.
+    orb_url: ?[]const u8 = null,
     jwt_token: ?[]const u8 = null,
     jwt_exp: i64 = 0,
 
@@ -276,10 +283,18 @@ pub const AccountManager = struct {
             const cred_val = obj.get("credential") orelse continue;
             const cred_json = std.json.Stringify.valueAlloc(alloc, cred_val, .{}) catch continue;
 
+            // A missing or non-string orb_url is simply "not configured"; it must
+            // never abort loading the rest of the account.
+            const orb_url: ?[]const u8 = if (obj.get("orb_url")) |v| switch (v) {
+                .string => |s| if (s.len > 0) s else null,
+                else => null,
+            } else null;
+
             self.list.append(self.allocator, .{
                 .name = name,
                 .user_id = uid,
                 .credential_json = cred_json,
+                .orb_url = orb_url,
             }) catch continue;
         }
 
@@ -374,6 +389,52 @@ pub fn addAccount(allocator: std.mem.Allocator, name: []const u8, user_id: []con
     try file.writeAll(output.written());
 }
 
+/// Set (non-empty `url`) or clear (empty `url`) one account's Orb portal link.
+/// Every other field of accounts.json is re-emitted untouched so saving a link
+/// can never drop a credential. Returns error.AccountNotFound for an unknown
+/// name.
+pub fn setOrbUrl(allocator: std.mem.Allocator, name: []const u8, url: []const u8) !void {
+    var buf: [4 * 1024 * 1024]u8 = undefined;
+    const file = std.fs.cwd().openFile("accounts.json", .{}) catch return error.AccountNotFound;
+    defer file.close();
+    const n = try file.readAll(&buf);
+    if (n == buf.len) return error.AccountsFileTooLarge;
+
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, buf[0..n], .{}) catch
+        return error.InvalidAccountsFile;
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.InvalidAccountsFile;
+    const accs = parsed.value.object.getPtr("accounts") orelse return error.AccountNotFound;
+    if (accs.* != .object) return error.AccountNotFound;
+    const entry = accs.object.getPtr(name) orelse return error.AccountNotFound;
+    if (entry.* != .object) return error.AccountNotFound;
+
+    if (url.len == 0) {
+        _ = entry.object.orderedRemove("orb_url");
+    } else {
+        try entry.object.put("orb_url", .{ .string = url });
+    }
+
+    // Re-emitting the parsed tree drops this file's original formatting.
+    // Everything else in it is a credential, so write the new content to a
+    // 0600 sibling and rename it over the original; a crash or a failed write
+    // leaves the old file intact.
+    const output = try std.json.Stringify.valueAlloc(allocator, parsed.value, .{ .whitespace = .indent_2 });
+    defer allocator.free(output);
+
+    const tmp_file = try std.fs.cwd().createFile(ACCOUNTS_TMP_FILE, .{ .mode = 0o600 });
+    tmp_file.writeAll(output) catch |err| {
+        tmp_file.close();
+        std.fs.cwd().deleteFile(ACCOUNTS_TMP_FILE) catch {};
+        return err;
+    };
+    tmp_file.close();
+    std.fs.cwd().rename(ACCOUNTS_TMP_FILE, "accounts.json") catch |err| {
+        std.fs.cwd().deleteFile(ACCOUNTS_TMP_FILE) catch {};
+        return err;
+    };
+}
+
 // ── Tests ──
 
 test "addAccount escapes JSON-special characters and reloads" {
@@ -433,6 +494,50 @@ test "accounts.json and active_account.txt are 0600 on POSIX" {
     mgr.setCurrent(0);
     const active_mode = (try std.fs.cwd().statFile(ACTIVE_ACCOUNT_FILE)).mode;
     try std.testing.expectEqual(@as(u32, 0o600), active_mode & 0o777);
+}
+
+test "orb_url round-trips through save, load, and a login rewrite" {
+    const allocator = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const cwd = try tmp.dir.realpathAlloc(allocator, ".");
+    defer allocator.free(cwd);
+    const original = try std.process.getCwdAlloc(allocator);
+    defer allocator.free(original);
+    try std.posix.chdir(cwd);
+    defer std.posix.chdir(original) catch {};
+
+    try addAccount(allocator, "alice", "1", "{\"access_token\":\"fake\"}");
+    const link = "https://portal.withorb.com/?token=fake-token-123";
+    try setOrbUrl(allocator, "alice", link);
+    try setOrbUrl(allocator, "alice", "https://portal.withorb.com/?token=fake-token-456");
+
+    var mgr = AccountManager.init(allocator);
+    defer mgr.deinit();
+    try mgr.loadFromFile();
+    try std.testing.expectEqual(@as(usize, 1), mgr.list.items.len);
+    try std.testing.expectEqualStrings("https://portal.withorb.com/?token=fake-token-456", mgr.list.items[0].orb_url.?);
+    try std.testing.expectEqualStrings("1", mgr.list.items[0].user_id);
+
+    // A later login rewrites accounts.json; the stored link must survive it.
+    try addAccount(allocator, "bob", "2", "{\"access_token\":\"fake2\"}");
+    var reloaded = AccountManager.init(allocator);
+    defer reloaded.deinit();
+    try reloaded.loadFromFile();
+    try std.testing.expectEqual(@as(usize, 2), reloaded.list.items.len);
+    try std.testing.expectEqualStrings("https://portal.withorb.com/?token=fake-token-456", reloaded.list.items[0].orb_url.?);
+    try std.testing.expect(reloaded.list.items[1].orb_url == null);
+
+    // Clearing drops the field and leaves the rest of the account intact.
+    try setOrbUrl(allocator, "alice", "");
+    var cleared = AccountManager.init(allocator);
+    defer cleared.deinit();
+    try cleared.loadFromFile();
+    try std.testing.expect(cleared.list.items[0].orb_url == null);
+    try std.testing.expectEqualStrings("alice", cleared.list.items[0].name);
+    try std.testing.expectEqualStrings("{\"access_token\":\"fake\"}", cleared.list.items[0].credential_json);
+
+    try std.testing.expectError(error.AccountNotFound, setOrbUrl(allocator, "nobody", link));
 }
 
 test "addAccount rejects oversized keys and a non-JSON credential" {

@@ -2,6 +2,7 @@ const std = @import("std");
 const accounts = @import("accounts.zig");
 const proxy = @import("proxy.zig");
 const providers = @import("providers.zig");
+const orb_quota = @import("orb_quota.zig");
 
 // Re-export for server.zig
 pub const initProxyPublic = proxy.init;
@@ -398,6 +399,154 @@ fn fetchModelsDirect(allocator: std.mem.Allocator, bearer: []const u8) ![]const 
         return error.UpstreamError;
     }
     return try response_buf.toOwnedSlice();
+}
+
+// ── Orb credit balance ──
+
+pub const OrbFetchError = error{ InvalidOrbLink, OrbTimeout, OrbRequestFailed, OrbParse };
+
+const ORB_ORIGIN = "https://portal.withorb.com";
+
+/// Chrome-like headers: the portal's WAF rejects obviously non-browser clients.
+const ORB_HEADERS =
+    "header = \"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36\"\n" ++
+    "header = \"Accept: application/json, text/plain, */*\"\n" ++
+    "header = \"Accept-Language: en-US,en;q=0.9\"\n" ++
+    "header = \"Origin: https://portal.withorb.com\"\n" ++
+    "header = \"Sec-Fetch-Site: same-origin\"\n" ++
+    "header = \"Sec-Fetch-Mode: cors\"\n" ++
+    "header = \"Sec-Fetch-Dest: empty\"\n" ++
+    "header = \"X-Requested-With: XMLHttpRequest\"\n";
+
+/// A value that can go into a quoted curl config line or header unchanged.
+fn curlSafeValue(value: []const u8) bool {
+    for (value) |byte| {
+        if (byte < 0x20 or byte == 0x7f) return false;
+        if (byte == '"' or byte == '\\') return false;
+    }
+    return true;
+}
+
+/// Customer and pricing-unit ids are interpolated into the ledger URL, so keep
+/// them to an obviously safe character set.
+fn orbIdSafe(id: []const u8) bool {
+    if (id.len == 0 or id.len > 128) return false;
+    for (id) |byte| {
+        if (std.ascii.isAlphanumeric(byte)) continue;
+        if (byte == '-' or byte == '_') continue;
+        return false;
+    }
+    return true;
+}
+
+/// GET an Orb endpoint through curl with the request written to `--config -` on
+/// stdin, so the bearer token in the URL never reaches the process argument
+/// list. `status_error` selects which error a non-2xx response becomes.
+fn orbCurlGet(
+    allocator: std.mem.Allocator,
+    url: []const u8,
+    referer: []const u8,
+    status_error: OrbFetchError,
+) OrbFetchError![]const u8 {
+    proxy.init(allocator);
+
+    var config: std.io.Writer.Allocating = .init(allocator);
+    defer config.deinit();
+    const w = &config.writer;
+    w.writeAll("silent\nshow-error\n") catch return error.OrbRequestFailed;
+    w.print("url = \"{s}\"\n", .{url}) catch return error.OrbRequestFailed;
+    w.writeAll("max-time = 10\nconnect-timeout = 10\n") catch return error.OrbRequestFailed;
+    w.writeAll(ORB_HEADERS) catch return error.OrbRequestFailed;
+    // A pasted link can contain characters that break the quoted config line;
+    // labelling the same origin is enough of a referer in that case.
+    const safe_referer = if (curlSafeValue(referer)) referer else ORB_ORIGIN ++ "/";
+    w.print("header = \"Referer: {s}\"\n", .{safe_referer}) catch return error.OrbRequestFailed;
+    if (proxy.getHost()) |host| {
+        // The host comes from an env var; a quote or newline there would inject
+        // another curl config line, so refuse instead of building one.
+        if (!curlSafeValue(host)) return error.OrbRequestFailed;
+        w.print("proxy = \"http://{s}:{d}\"\n", .{ host, proxy.getPort() }) catch return error.OrbRequestFailed;
+    }
+    w.writeAll("write-out = \"\\n__HTTP_STATUS__%{http_code}\"\n") catch return error.OrbRequestFailed;
+
+    var child = std.process.Child.init(&.{ "curl", "--config", "-" }, allocator);
+    child.stdin_behavior = .Pipe;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+    child.spawn() catch return error.OrbRequestFailed;
+
+    // Close stdin before reading: the request is small, and curl must see EOF
+    // before it can finish and be collected.
+    if (child.stdin) |stdin_file| {
+        stdin_file.writeAll(config.written()) catch {
+            _ = child.kill() catch {};
+            return error.OrbRequestFailed;
+        };
+        stdin_file.close();
+        child.stdin = null;
+    }
+
+    var stdout: std.ArrayList(u8) = .empty;
+    defer stdout.deinit(allocator);
+    var stderr: std.ArrayList(u8) = .empty;
+    defer stderr.deinit(allocator);
+    child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024) catch {
+        _ = child.kill() catch {};
+        return error.OrbRequestFailed;
+    };
+    const term = child.wait() catch return error.OrbRequestFailed;
+    switch (term) {
+        .Exited => |code| {
+            if (code == 28) return error.OrbTimeout;
+            if (code != 0) return error.OrbRequestFailed;
+        },
+        else => return error.OrbRequestFailed,
+    }
+
+    var body: []const u8 = stdout.items;
+    var status: []const u8 = "";
+    if (std.mem.lastIndexOf(u8, body, "\n__HTTP_STATUS__")) |pos| {
+        status = body[pos + "\n__HTTP_STATUS__".len ..];
+        body = body[0..pos];
+    }
+    if (!std.mem.startsWith(u8, status, "2")) return status_error;
+
+    const owned = allocator.dupe(u8, body) catch return error.OrbRequestFailed;
+    return owned;
+}
+
+/// Fetch the current-period credit summary for an Orb portal link. Two
+/// sequential GETs run inside a temporary arena so the returned Credit owns
+/// copies of the two dates.
+pub fn fetchOrbCredit(allocator: std.mem.Allocator, link: []const u8) OrbFetchError!orb_quota.Credit {
+    const token = orb_quota.tokenFromLink(link) orelse return error.InvalidOrbLink;
+    if (!curlSafeValue(token)) return error.InvalidOrbLink;
+
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    // The token is inserted into two query strings; escape the characters that
+    // would otherwise split the query or end it.
+    const token_enc = orb_quota.encodeToken(arena, token) catch return error.OrbRequestFailed;
+
+    const customer_url = std.fmt.allocPrint(arena, "{s}/api/v1/customer_from_link?token={s}", .{ ORB_ORIGIN, token_enc }) catch
+        return error.OrbRequestFailed;
+    const customer_body = try orbCurlGet(arena, customer_url, link, error.InvalidOrbLink);
+    const customer_parsed = std.json.parseFromSlice(std.json.Value, arena, customer_body, .{}) catch return error.OrbParse;
+    const customer = orb_quota.parseCustomer(customer_parsed.value) orelse return error.OrbParse;
+    if (!orbIdSafe(customer.id) or !orbIdSafe(customer.pricing_unit_id)) return error.OrbParse;
+
+    const ledger_url = std.fmt.allocPrint(
+        arena,
+        "{s}/api/v1/customers/{s}/ledger_summary?pricing_unit_id={s}&token={s}",
+        .{ ORB_ORIGIN, customer.id, customer.pricing_unit_id, token_enc },
+    ) catch return error.OrbRequestFailed;
+    const ledger_body = try orbCurlGet(arena, ledger_url, link, error.OrbRequestFailed);
+    const ledger_parsed = std.json.parseFromSlice(std.json.Value, arena, ledger_body, .{}) catch return error.OrbParse;
+    const credit = orb_quota.parseLedger(ledger_parsed.value);
+    if (!credit.ok) return error.OrbParse;
+    return credit;
 }
 
 // ── Billing ──

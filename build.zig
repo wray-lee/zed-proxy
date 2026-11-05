@@ -158,6 +158,23 @@ pub fn build(b: *std.Build) void {
     }
     const run_accounts_tests = b.addRunArtifact(accounts_tests);
 
+    // Orb portal link validation and ledger parsing are pure functions; they
+    // run on invented JSON without touching the network.
+    const orb_quota_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/orb_quota.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const orb_quota_tests = b.addTest(.{ .root_module = orb_quota_test_mod });
+    if (target.result.os.tag == .windows) {
+        orb_quota_tests.root_module.linkSystemLibrary("bcrypt", .{});
+        orb_quota_tests.root_module.linkSystemLibrary("advapi32", .{});
+        orb_quota_tests.root_module.linkSystemLibrary("crypt32", .{});
+        orb_quota_tests.root_module.linkSystemLibrary("ws2_32", .{});
+    }
+    const run_orb_quota_tests = b.addRunArtifact(orb_quota_tests);
+
     // RSA keypair round-trip drives the installed openssl binary.
     const auth_test_mod = b.createModule(.{
         .root_source_file = b.path("src/auth.zig"),
@@ -182,5 +199,6 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_gateway_auth_tests.step);
     test_step.dependOn(&run_zed_login_tests.step);
     test_step.dependOn(&run_accounts_tests.step);
+    test_step.dependOn(&run_orb_quota_tests.step);
     test_step.dependOn(&run_auth_tests.step);
 }

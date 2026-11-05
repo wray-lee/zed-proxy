@@ -1407,8 +1407,9 @@ fn buildOpenAIRequest(allocator: std.mem.Allocator, w: *std.io.Writer, parsed: s
 /// High/max reasoning can consume most of a small completion budget before a
 /// visible answer is emitted. Keep the existing safety floor only when the
 /// effective effort really is xhigh/max; lower client-selected levels retain
-/// the exact budget they sent.
-const GPT_REASONING_OUTPUT_FLOOR: i64 = 32768;
+/// the exact budget they sent. Public so the health probe can report the
+/// budget it will really get.
+pub const GPT_REASONING_OUTPUT_FLOOR: i64 = 32768;
 
 /// Zed's OpenAI provider currently accepts only the fully typed Responses
 /// representation, while the public Responses API also accepts two official

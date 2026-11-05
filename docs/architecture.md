@@ -17,6 +17,7 @@ This page maps the modules and the two flows that matter: a model request and a 
 | `src/stream.zig` | Streaming path. Spawns `curl`, parses the upstream event stream, and emits SSE in the client's protocol. Also owns the account failover loop for streams. |
 | `src/accounts.zig` | Account pool: `accounts.json` loading and writing, active account persistence, cooldown state, try order, and failure classification. |
 | `src/account_status.zig` | Credential-free summary of the `client/users/me` billing response. |
+| `src/orb_quota.zig` | Orb portal link validation, token extraction, ledger response parsing and aggregation. Pure functions, no HTTP. |
 | `src/auth.zig` | RSA keypair generation and OAEP-SHA256 decryption, using BCrypt on Windows and the `openssl` CLI elsewhere. Also the local-callback login flow. |
 | `src/zed_login.zig` | Parsing of the pasted callback URL or query string, plus the `SlotState` helper for the single-login slot. Pure functions, no sockets or files. |
 | `src/socket.zig` | Socket read and write wrappers for the Windows and POSIX paths, plus HTTP response writing. |
@@ -51,7 +52,7 @@ Everything lives in the data directory (the working directory after `ZED_DATA_DI
 
 | File | Contents |
 | --- | --- |
-| `accounts.json` | Account map: name to `user_id` and the Zed credential JSON. Written by login, read at startup. |
+| `accounts.json` | Account map: name to `user_id`, the Zed credential JSON, and an optional `orb_url`. Written by login and by `POST /zed/accounts/orb`, read at startup. |
 | `active_account.txt` | Name of the last active account, so a restart resumes on it instead of the first entry. |
 | `api_key` | Optional gateway key file, used when neither `ZED_API_KEY` nor `ZED_API_KEY_FILE` is set. |
 | `zed-proxy_req_*.json`, `zed-proxy_stream_*.json` | Short-lived request bodies handed to `curl` through `--data-binary @file`. Deleted after the request; the data directory must therefore be writable for proxying to work. |

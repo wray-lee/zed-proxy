@@ -13,3 +13,5 @@
 - `ZED_VERSION` 在编译期固定为 `1.8.2`。上游接受的客户端版本变化时，模型或套餐判定可能随之改变。
 - 除非设置 `ZED_SYSTEM_ID`，换取令牌时不发送 system id。作者的检查中，普通账号不带它也能换取令牌并完成请求；如果 Zed 对试用账号返回 `trial_blocked`，请把 `ZED_SYSTEM_ID` 设为你的 Zed 客户端注册时使用的 id。
 - 上游凭据通过 `-H` 参数传给 `curl`，会出现在进程参数列表中，同机其他用户可读。见 [SECURITY.md](../SECURITY.md)。
+- Orb 余额来自非官方 portal API（`portal.withorb.com/api/v1`），不来自 Zed，也没有公开契约。它可能随时变化或失效，届时解析会返回错误码而不是余额。余额按账号缓存 5 分钟，因此最多滞后 portal 这么久；失败的获取缓存 60 秒。
+- Orb 链接是放在 URL 查询串里的 bearer token，拿到它的人可以读取对应客户的 Orb 数据，请当作密码对待。它以明文存放在 `accounts.json`，API 不会返回它，日志也不会写入它。

@@ -36,6 +36,8 @@ Zed's model service expects its own request payloads and a signed-in Zed account
 - Gemini thinking support: client `reasoning_effort` maps to Gemini `thinkingLevel`, and upstream parts marked `thought: true` are split into thinking output instead of visible text.
 - Account pool with cooldowns and failover. Auth errors, rate limits, and repeated upstream errors bench an account for a period, and the next request is attempted on another account.
 - Web management page served at `/`.
+- Credit balance display: attach an Orb portal link to an account and see used and remaining credit, the reset date and a usage bar in the account center.
+- Selectable live-check model: probe every account with any model from the catalogue, and the account center remembers the choice.
 - Gateway API key authentication with a fail-closed bind rule: a non-loopback bind without any configured key refuses to start.
 - Prebuilt multi-arch image on GHCR, plus compose files for the prebuilt image and for building from source.
 - Paste-callback login for container and remote deployments.
@@ -43,7 +45,7 @@ Zed's model service expects its own request payloads and a signed-in Zed account
 
 ## Web UI
 
-The management page at `/` shows every account's plan, quota, cooldown and a live model check, and has a read-only service diagnosis. It is available in English and Chinese.
+The management page at `/` shows every account's plan, quota, Orb credit balance, cooldown and a live model check, lists the model catalogue with each model's reasoning levels, and has a read-only service diagnosis. It is available in English and Chinese.
 
 <p align="center"><img src="docs/assets/webui-health.en.png" alt="ZedProxy Web UI service check" width="760"></p>
 

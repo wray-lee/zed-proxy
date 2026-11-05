@@ -17,6 +17,7 @@
 | `src/stream.zig` | 流式链路。启动 `curl`，解析上游事件流，按客户端协议输出 SSE，同时负责流式请求的账号 failover 循环。 |
 | `src/accounts.zig` | 账号池：`accounts.json` 的读写、当前账号持久化、冷却状态、尝试顺序与失败分类。 |
 | `src/account_status.zig` | `client/users/me` 账单响应的无凭据摘要。 |
+| `src/orb_quota.zig` | Orb portal 链接校验、token 提取、ledger 响应解析与汇总。纯函数，不发 HTTP。 |
 | `src/auth.zig` | RSA 密钥对生成与 OAEP-SHA256 解密，Windows 用 BCrypt，其他平台用 `openssl` 命令行。也包含本地回调登录流程。 |
 | `src/zed_login.zig` | 解析粘贴的回调 URL 或查询串，并提供单登录槽的 `SlotState`。纯函数，不涉及 socket 和文件。 |
 | `src/socket.zig` | Windows 与 POSIX 两条路径的 socket 读写封装，以及 HTTP 响应写出。 |
@@ -51,7 +52,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| `accounts.json` | 账号映射：名称对应 `user_id` 和 Zed 凭据 JSON。登录时写入，启动时读取。 |
+| `accounts.json` | 账号映射：名称对应 `user_id`、Zed 凭据 JSON 和可选的 `orb_url`。登录及 `POST /zed/accounts/orb` 写入，启动时读取。 |
 | `active_account.txt` | 上次使用的账号名，重启后从它继续，而不是回到第一项。 |
 | `api_key` | 可选的网关 key 文件，仅在 `ZED_API_KEY` 与 `ZED_API_KEY_FILE` 都未设置时使用。 |
 | `zed-proxy_req_*.json`、`zed-proxy_stream_*.json` | 通过 `--data-binary @file` 交给 `curl` 的短期请求体，请求结束后删除。因此数据目录必须可写，代理才能工作。 |

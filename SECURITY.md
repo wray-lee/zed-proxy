@@ -41,15 +41,24 @@ forwards requests on the user's behalf. It is not a multi-tenant service.
   back it up to a public location, or mount it where other workloads can read
   it. In the container the process runs as uid 10001, so the host directory can
   be owned by that uid.
+- **Orb portal links.** The optional per-account `orb_url` field holds an Orb
+  portal link whose `token` query parameter is a bearer credential: anyone who
+  has the link can read that customer's Orb billing data. It is stored in
+  plaintext in `accounts.json`, so the same file rules apply. The gateway
+  never returns the link or token in a response and never writes it to a log.
+  Outbound Orb requests are passed to `curl` through `--config -` on stdin
+  precisely so the token does not appear in the process argument list. The
+  Orb balance is fetched from an unofficial portal API that can change without
+  notice.
 - **No rate limiting or tenant isolation.** There is no quota, throttling or
   per-client separation. Every caller that holds a key shares the same account
   pool and the same upstream quota. Do not expose the gateway to untrusted
   users, and prefer a loopback bind unless a key is configured and the network
   is trusted.
 - **Logging.** The server writes to stderr through `std.debug.print`, and the
-  container runtime collects that stream. It does not print gateway keys or
-  account credentials. Upstream error response bodies are logged for
-  diagnosis, so review logs before sharing them.
+  container runtime collects that stream. It does not print gateway keys,
+  account credentials or Orb links. Upstream error response bodies are logged
+  for diagnosis, so review logs before sharing them.
 - **Request limits.** Request bodies are capped at 16 MiB.
 
 ## Known limitations
@@ -67,3 +76,7 @@ forwards requests on the user's behalf. It is not a multi-tenant service.
   `chmod 700 ./data` after `chown`.
 - The login flow writes a short-lived ciphertext to a `0600` temp file in the
   data directory while `openssl` decrypts it.
+- The Orb credit balance is cached in memory for 5 minutes per account, and a
+  failed fetch for 60 seconds. The cache is not persisted, so a restart fetches
+  again on the first status request. The portal API is unofficial and can
+  change or break at any time.

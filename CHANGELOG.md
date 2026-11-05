@@ -5,6 +5,33 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog v1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-11-05
+
+### Added
+
+- `POST /zed/accounts/health` accepts an optional `model` slug from
+  `GET /v1/models`. Unknown slugs return `400 {"error":"unknown model"}`; the
+  default remains `gpt-5.6-luna`. The probe is built for the chosen model and
+  the response reports the model, the reasoning effort and the output budget
+  actually used (`null` for Gemini, which carries no output cap).
+- `Models` page in the Web UI, listing every model's display name, slug,
+  vendor, description, supported reasoning levels and default level, with an
+  action that selects a model for the live check.
+- "Test model" select in the account center, persisted in `localStorage`
+  under `zed_probe_model`, sent with every live check. Button labels and the
+  info banner name the selected model instead of hard-coding Luna.
+- Optional `orb_url` per account in `accounts.json`, kept across rewrites.
+  `POST /zed/accounts/orb` sets or clears it after validating the scheme, the
+  exact host (no userinfo, default port only) and the `token` query parameter.
+  Saving rewrites `accounts.json` through a `0600` temp file and an atomic
+  rename, so a failed write cannot truncate stored credentials.
+- `GET /zed/accounts/status` entries gain `orb_configured` and, when
+  configured, a `credit` object with balance, cap, used amount and percentage,
+  period start, reset date and total balance. Results are cached for 5 minutes
+  (60 seconds on failure).
+- Account cards show the credit balance with a usage bar and reset date, plus
+  a "Link balance" / "Unlink" flow. The link is never displayed back.
+
 ## [0.1.1] - 2026-11-05
 
 ### Fixed

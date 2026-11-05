@@ -5,6 +5,7 @@ const zed = @import("zed.zig");
 const proxy = @import("proxy.zig");
 const providers = @import("providers.zig");
 const account_status = @import("account_status.zig");
+const orb_quota = @import("orb_quota.zig");
 const stream = @import("stream.zig");
 const socket = @import("socket.zig");
 const gateway_auth = @import("gateway_auth.zig");
@@ -13,14 +14,93 @@ const web_ui = @embedFile("web_index_html");
 
 // Explicit health probes are intentionally tiny. Passive quota checks never
 // invoke a model; when the user asks for a real inference check, use the
-// lowest project model tier, disable reasoning, and keep a modest margin above
-// the upstream's observed 16-token output minimum.
+// selected model with the cheapest reasoning level its provider accepts, and
+// keep a modest margin above the upstream's observed 16-token output minimum.
 const HEALTH_PROBE_MODEL = "gpt-5.6-luna";
-const HEALTH_PROBE_EFFORT = "none";
 const HEALTH_PROBE_MAX_OUTPUT_TOKENS: i64 = 32;
-const HEALTH_PROBE_BODY =
-    \\{"model":"gpt-5.6-luna","messages":[{"role":"user","content":"Reply only OK"}],"reasoning_effort":"none","max_completion_tokens":32,"stream":false}
-;
+
+// Probe reasoning per provider. GPT-5.6 accepts "none" and is cheapest that
+// way; GPT-5.5 is pinned to xhigh by the conversion layer, so sending a field
+// would be misleading; Anthropic models take no effort field at all; Gemini
+// rejects MINIMAL, and its low level is the cheapest one this proxy will send.
+const ProbeEffort = struct {
+    /// Value for the body's `reasoning_effort`, null to omit the field.
+    send: ?[]const u8,
+    /// What the upstream will actually run, for the response object.
+    used: []const u8,
+};
+
+pub fn probeEffortFor(model: []const u8) ProbeEffort {
+    const normalized = providers.normalizeModelName(model);
+    const provider = providers.getProvider(normalized);
+    if (std.mem.eql(u8, provider, "open_ai")) {
+        if (std.mem.startsWith(u8, normalized, "gpt-5.5")) return .{ .send = null, .used = "xhigh" };
+        return .{ .send = "none", .used = "none" };
+    }
+    if (std.mem.eql(u8, provider, "google")) return .{ .send = "low", .used = "low" };
+    return .{ .send = null, .used = "" };
+}
+
+/// The output budget the upstream will really enforce for this probe. GPT-5.5
+/// is pinned to xhigh, so the conversion layer lifts any requested budget to
+/// its large-reasoning floor; Gemini requests carry no output limit at all.
+pub fn probeOutputBudget(model: []const u8) ?i64 {
+    if (std.mem.eql(u8, providers.getProvider(providers.normalizeModelName(model)), "google")) return null;
+    if (std.mem.startsWith(u8, providers.normalizeModelName(model), "gpt-5.5")) return providers.GPT_REASONING_OUTPUT_FLOOR;
+    return HEALTH_PROBE_MAX_OUTPUT_TOKENS;
+}
+
+/// The probe is sent through the Chat Completions path, so the body uses
+/// top-level `reasoning_effort`. Providers that would refuse or ignore the
+/// field do not receive it. `max_tokens`/`max_completion_tokens` stay tiny;
+/// `probeOutputBudget` reports what the conversion layer will really enforce.
+pub fn buildProbeBody(allocator: std.mem.Allocator, model: []const u8) ![]const u8 {
+    const effort = probeEffortFor(model);
+    if (effort.send) |value| {
+        return std.fmt.allocPrint(
+            allocator,
+            "{{\"model\":\"{s}\",\"messages\":[{{\"role\":\"user\",\"content\":\"Reply only OK\"}}],\"reasoning_effort\":\"{s}\",\"max_tokens\":{d},\"max_completion_tokens\":{d},\"stream\":false}}",
+            .{ model, value, HEALTH_PROBE_MAX_OUTPUT_TOKENS, HEALTH_PROBE_MAX_OUTPUT_TOKENS },
+        );
+    }
+    return std.fmt.allocPrint(
+        allocator,
+        "{{\"model\":\"{s}\",\"messages\":[{{\"role\":\"user\",\"content\":\"Reply only OK\"}}],\"max_tokens\":{d},\"max_completion_tokens\":{d},\"stream\":false}}",
+        .{ model, HEALTH_PROBE_MAX_OUTPUT_TOKENS, HEALTH_PROBE_MAX_OUTPUT_TOKENS },
+    );
+}
+
+/// `/v1/models` advertises the local slug catalog embedded in models.json; that
+/// is the same list the WebUI shows, so a probe accepts exactly those slugs.
+pub fn isKnownProbeModel(slug: []const u8) bool {
+    // An arena keeps this callable before `run` sets `global_allocator`, and
+    // page_allocator's free is a no-op, so the tree must be released in one go.
+    var arena_state = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena_state.deinit();
+    const parsed = std.json.parseFromSlice(std.json.Value, arena_state.allocator(), @embedFile("models.json"), .{}) catch return false;
+    defer parsed.deinit();
+    if (parsed.value != .object) return false;
+    return catalogHasSlug(parsed.value, slug);
+}
+
+/// Match `models[].slug` (Zed's own catalog shape) or `data[].id` (the OpenAI
+/// envelope), so either embedded list can back the probe selector.
+pub fn catalogHasSlug(root: std.json.Value, slug: []const u8) bool {
+    const lists = [_]struct { key: []const u8, field: []const u8 }{
+        .{ .key = "models", .field = "slug" },
+        .{ .key = "data", .field = "id" },
+    };
+    for (lists) |list| {
+        const value = root.object.get(list.key) orelse continue;
+        if (value != .array) continue;
+        for (value.array.items) |model| {
+            if (model != .object) continue;
+            const entry = model.object.get(list.field) orelse continue;
+            if (entry == .string and std.mem.eql(u8, entry.string, slug)) return true;
+        }
+    }
+    return false;
+}
 
 var account_mgr: accounts.AccountManager = undefined;
 var global_allocator: std.mem.Allocator = undefined;
@@ -229,6 +309,8 @@ fn route(method: []const u8, path: []const u8, body: []const u8) !Response {
         return try handleAccountStatuses();
     if (std.mem.eql(u8, path, "/zed/accounts/health") and std.mem.eql(u8, method, "POST"))
         return try handleAccountHealth(body);
+    if (std.mem.eql(u8, path, "/zed/accounts/orb") and std.mem.eql(u8, method, "POST"))
+        return try handleAccountOrb(body);
     if (std.mem.eql(u8, path, "/zed/accounts/switch") and std.mem.eql(u8, method, "POST"))
         return handleSwitchAccount(body);
     if (std.mem.eql(u8, path, "/zed/usage") and std.mem.eql(u8, method, "GET"))
@@ -374,6 +456,155 @@ fn writeOptionalString(w: *std.io.Writer, value: ?[]const u8) !void {
     }
 }
 
+// ── Orb credit cache ──
+
+const ORB_CACHE_TTL_S: i64 = 300;
+const ORB_FAILURE_TTL_S: i64 = 60;
+
+const OrbCacheEntry = struct {
+    credit: orb_quota.Credit,
+    fetched_at: i64,
+};
+
+// Guarded by orb_cache_mutex; the status route may run on many threads.
+var orb_cache_mutex: std.Thread.Mutex = .{};
+var orb_cache: std.StringHashMap(OrbCacheEntry) = undefined;
+var orb_cache_ready = false;
+
+fn orbCacheInit() void {
+    if (orb_cache_ready) return;
+    orb_cache = std.StringHashMap(OrbCacheEntry).init(global_allocator);
+    orb_cache_ready = true;
+}
+
+/// The cached credit for an account, fetching when the entry is missing or
+/// past its TTL. Failures are cached for a shorter time so a dead link is not
+/// hammered by a status poll. The account name is duplicated into the cache.
+fn orbCreditFor(acc: *const accounts.Account) ?orb_quota.Credit {
+    const link = acc.orb_url orelse return null;
+    const now = std.time.timestamp();
+
+    orb_cache_mutex.lock();
+    orbCacheInit();
+    if (orb_cache.get(acc.name)) |entry| {
+        const ttl = if (entry.credit.ok) ORB_CACHE_TTL_S else ORB_FAILURE_TTL_S;
+        if (now - entry.fetched_at < ttl) {
+            const cached = entry.credit;
+            orb_cache_mutex.unlock();
+            return cached;
+        }
+    }
+    // The fetch is not under the lock: one slow portal response must not stall
+    // status polls for other accounts. A duplicate fetch on a race only costs
+    // one extra request.
+    orb_cache_mutex.unlock();
+
+    const credit = zed.fetchOrbCredit(global_allocator, link) catch |err| orb_quota.Credit{
+        .ok = false,
+        .error_code = switch (err) {
+            error.InvalidOrbLink => "invalid_link",
+            error.OrbTimeout => "timeout",
+            error.OrbParse => "parse_error",
+            else => "fetch_failed",
+        },
+    };
+
+    orb_cache_mutex.lock();
+    defer orb_cache_mutex.unlock();
+    if (orb_cache.getPtr(acc.name)) |existing| {
+        existing.* = .{ .credit = credit, .fetched_at = now };
+    } else {
+        const key = global_allocator.dupe(u8, acc.name) catch return credit;
+        orb_cache.put(key, .{ .credit = credit, .fetched_at = now }) catch {
+            global_allocator.free(key);
+            return credit;
+        };
+    }
+    return credit;
+}
+
+/// `nan`/`inf` are not valid JSON: a single one would break every client that
+/// parses the status response, so the writer never emits them.
+fn finite(value: f64) f64 {
+    return if (std.math.isFinite(value)) value else 0;
+}
+
+fn writeOrbCredit(w: *std.io.Writer, credit: orb_quota.Credit) !void {
+    if (!credit.ok) {
+        try w.writeAll("{\"ok\":false,\"error\":");
+        try std.json.Stringify.encodeJsonString(credit.error_code orelse "parse_error", .{}, w);
+        try w.writeAll("}");
+        return;
+    }
+    try w.print(
+        "{{\"ok\":true,\"balance_usd\":{d:.4},\"cap_usd\":{d:.4},\"used_usd\":{d:.4},\"used_pct\":{d:.2},\"period_start\":",
+        .{ finite(credit.balance_usd), finite(credit.cap_usd), finite(credit.used_usd), finite(credit.used_pct) },
+    );
+    try std.json.Stringify.encodeJsonString(credit.periodStart(), .{}, w);
+    try w.writeAll(",\"resets_at\":");
+    try std.json.Stringify.encodeJsonString(credit.resetsAt(), .{}, w);
+    try w.print(",\"total_balance_usd\":{d:.4}}}", .{finite(credit.total_balance_usd)});
+}
+
+/// POST /zed/accounts/orb: `{"account":"name","url":"<link>"}`, where an empty
+/// url clears the stored link. The link is never echoed back.
+fn handleAccountOrb(body: []const u8) !Response {
+    const parsed = std.json.parseFromSlice(std.json.Value, global_allocator, body, .{}) catch
+        return .{ .status = 400, .body = "{\"error\":\"invalid json\"}" };
+    defer parsed.deinit();
+    if (parsed.value != .object)
+        return .{ .status = 400, .body = "{\"error\":\"request body must be an object\"}" };
+
+    const name = switch (parsed.value.object.get("account") orelse return .{ .status = 400, .body = "{\"error\":\"missing account\"}" }) {
+        .string => |s| s,
+        else => return .{ .status = 400, .body = "{\"error\":\"account must be a string\"}" },
+    };
+    const url = switch (parsed.value.object.get("url") orelse std.json.Value{ .string = "" }) {
+        .string => |s| s,
+        else => return .{ .status = 400, .body = "{\"error\":\"url must be a string\"}" },
+    };
+
+    if (url.len > 0) {
+        orb_quota.validateLink(url) catch
+            return .{ .status = 400, .body = "{\"error\":\"invalid orb link\"}" };
+    }
+
+    // Login rewrites accounts.json too; share its lock so the two writes
+    // cannot interleave and drop each other's fields. The account pointer must
+    // be resolved under the same lock: a concurrent login deinits and reloads
+    // the manager, which frees the list this pointer would come from.
+    finalize_mutex.lock();
+    defer finalize_mutex.unlock();
+
+    var target: ?*accounts.Account = null;
+    for (account_mgr.list.items) |*acc| {
+        if (std.mem.eql(u8, acc.name, name)) target = acc;
+    }
+    if (target == null) return .{ .status = 404, .body = "{\"error\":\"account not found\"}" };
+
+    accounts.setOrbUrl(global_allocator, name, url) catch |err| switch (err) {
+        error.AccountNotFound => return .{ .status = 404, .body = "{\"error\":\"account not found\"}" },
+        else => return .{ .status = 500, .body = "{\"error\":\"failed to save orb link\"}" },
+    };
+    // Update the live entry in place; a full manager reload here would race
+    // with request threads holding pointers into the old list.
+    const acc = target.?;
+    if (url.len == 0) {
+        acc.orb_url = null;
+    } else {
+        acc.orb_url = account_mgr.arena.allocator().dupe(u8, url) catch acc.orb_url;
+    }
+
+    // Drop any cached credit for this account so the next status poll reflects
+    // the new link instead of the previous one.
+    orb_cache_mutex.lock();
+    orbCacheInit();
+    if (orb_cache.fetchRemove(name)) |removed| global_allocator.free(removed.key);
+    orb_cache_mutex.unlock();
+
+    return .{ .status = 200, .body = "{\"success\":true}" };
+}
+
 /// Check every configured account without exposing credentials or JWTs. A
 /// successful LLM-token refresh proves that the account can authenticate;
 /// billing data then provides the best non-consuming quota signal available.
@@ -405,6 +636,14 @@ fn handleAccountStatuses() !Response {
             acc.last_probe_at,
             acc.last_probe_latency_ms,
         });
+
+        // Orb credit is fetched sequentially, one configured account at a
+        // time, and served from the per-account cache for 5 minutes.
+        try w.print(",\"orb_configured\":{s}", .{if (acc.orb_url != null) "true" else "false"});
+        if (orbCreditFor(acc)) |credit| {
+            try w.writeAll(",\"credit\":");
+            try writeOrbCredit(w, credit);
+        }
 
         const token: ?[]const u8 = zed.getToken(global_allocator, acc) catch null;
         if (token == null) {
@@ -453,9 +692,15 @@ fn handleAccountStatuses() !Response {
 
 /// Run a real, account-specific inference probe. This bypasses failover on
 /// purpose: a healthy second account must not hide a broken selected account.
-fn runAccountHealthProbe(acc: *accounts.Account) void {
+fn runAccountHealthProbe(acc: *accounts.Account, model: []const u8) void {
+    const probe_body = buildProbeBody(global_allocator, model) catch {
+        accounts.AccountManager.markProbeFailure(acc, .upstream_error, .transient, 500, 0);
+        return;
+    };
+    defer global_allocator.free(probe_body);
+
     const started_ms = std.time.milliTimestamp();
-    const result: anyerror![]const u8 = zed.proxyChatCompletions(global_allocator, acc, HEALTH_PROBE_BODY);
+    const result: anyerror![]const u8 = zed.proxyChatCompletions(global_allocator, acc, probe_body);
     const latency_ms = @max(@as(i64, 0), std.time.milliTimestamp() - started_ms);
 
     if (result) |response| {
@@ -512,11 +757,15 @@ fn writeAccountHealthResult(w: *std.io.Writer, acc: *const accounts.Account, now
     });
 }
 
-/// POST body may be `{}` for all accounts or `{"account":"name"}` for one.
-/// The response contains only diagnostics and never returns credentials/JWTs.
+/// POST body may be `{}` for all accounts or `{"account":"name"}` for one,
+/// each with an optional `"model":"<slug>"`. The response contains only
+/// diagnostics and never returns credentials/JWTs.
 fn handleAccountHealth(body: []const u8) !Response {
     var target_owned: ?[]const u8 = null;
     defer if (target_owned) |target| global_allocator.free(target);
+    var model_owned: ?[]const u8 = null;
+    defer if (model_owned) |owned| global_allocator.free(owned);
+    var model: []const u8 = HEALTH_PROBE_MODEL;
 
     if (body.len > 0) {
         const parsed = std.json.parseFromSlice(std.json.Value, global_allocator, body, .{}) catch
@@ -529,6 +778,15 @@ fn handleAccountHealth(body: []const u8) !Response {
                 return .{ .status = 400, .body = "{\"error\":\"account must be a string\"}" };
             target_owned = try global_allocator.dupe(u8, account_value.string);
         }
+        if (parsed.value.object.get("model")) |model_value| {
+            if (model_value != .string)
+                return .{ .status = 400, .body = "{\"error\":\"model must be a string\"}" };
+            if (!isKnownProbeModel(model_value.string))
+                return .{ .status = 400, .body = "{\"error\":\"unknown model\"}" };
+            // Keep the choice alive past `parsed`.
+            model_owned = try global_allocator.dupe(u8, model_value.string);
+            model = model_owned.?;
+        }
     }
 
     if (target_owned) |target| {
@@ -536,26 +794,28 @@ fn handleAccountHealth(body: []const u8) !Response {
         for (account_mgr.list.items) |*acc| {
             if (!std.mem.eql(u8, acc.name, target)) continue;
             found = true;
-            runAccountHealthProbe(acc);
+            runAccountHealthProbe(acc, model);
             break;
         }
         if (!found) return .{ .status = 404, .body = "{\"error\":\"account not found\"}" };
     } else {
         // Sequential checks keep resource use predictable and avoid sending a
         // burst of paid model requests when many accounts are configured.
-        for (account_mgr.list.items) |*acc| runAccountHealthProbe(acc);
+        for (account_mgr.list.items) |*acc| runAccountHealthProbe(acc, model);
     }
 
     const now = std.time.timestamp();
     var output: std.io.Writer.Allocating = .init(global_allocator);
     errdefer output.deinit();
     const w = &output.writer;
-    try w.print("{{\"checked_at\":{d},\"probe\":{{\"model\":\"{s}\",\"reasoning_effort\":\"{s}\",\"max_output_tokens\":{d}}},\"accounts\":[", .{
-        now,
-        HEALTH_PROBE_MODEL,
-        HEALTH_PROBE_EFFORT,
-        HEALTH_PROBE_MAX_OUTPUT_TOKENS,
-    });
+    try w.print("{{\"checked_at\":{d},\"probe\":{{\"model\":\"{s}\",\"reasoning_effort\":", .{ now, model });
+    // Null means "the provider takes no effort knob", which is different from
+    // a provider default the client should guess at.
+    const effort_used = probeEffortFor(model).used;
+    if (effort_used.len > 0) try std.json.Stringify.encodeJsonString(effort_used, .{}, w) else try w.writeAll("null");
+    try w.writeAll(",\"max_output_tokens\":");
+    if (probeOutputBudget(model)) |budget| try w.print("{d}", .{budget}) else try w.writeAll("null");
+    try w.writeAll("},\"accounts\":[");
     var written: usize = 0;
     for (account_mgr.list.items) |*acc| {
         if (target_owned) |target| {
@@ -1150,10 +1410,64 @@ fn handleLoginStatus() Response {
 
 test "health probe payload matches its advertised safety budget" {
     try std.testing.expect(HEALTH_PROBE_MAX_OUTPUT_TOKENS > 16);
-    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, HEALTH_PROBE_BODY, .{});
+    const body_text = try buildProbeBody(std.testing.allocator, HEALTH_PROBE_MODEL);
+    defer std.testing.allocator.free(body_text);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, body_text, .{});
     defer parsed.deinit();
     const body = parsed.value.object;
     try std.testing.expectEqualStrings(HEALTH_PROBE_MODEL, body.get("model").?.string);
-    try std.testing.expectEqualStrings(HEALTH_PROBE_EFFORT, body.get("reasoning_effort").?.string);
+    try std.testing.expectEqualStrings("none", body.get("reasoning_effort").?.string);
     try std.testing.expectEqual(HEALTH_PROBE_MAX_OUTPUT_TOKENS, body.get("max_completion_tokens").?.integer);
+    // Anthropic reads `max_tokens`; the same tiny budget is sent under both names.
+    try std.testing.expectEqual(HEALTH_PROBE_MAX_OUTPUT_TOKENS, body.get("max_tokens").?.integer);
+}
+
+test "probe body uses an effort each provider accepts" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { model: []const u8, effort: ?[]const u8 }{
+        .{ .model = "gpt-5.6-luna", .effort = "none" },
+        .{ .model = "gpt-5.6-sol", .effort = "none" },
+        .{ .model = "gpt-5.5", .effort = null },
+        .{ .model = "claude-sonnet-5", .effort = null },
+        .{ .model = "gemini-4-argon", .effort = "low" },
+    };
+    // The reported effort is what the upstream will actually use; an empty
+    // string means "no effort knob" and is serialized as null.
+    try std.testing.expectEqualStrings("xhigh", probeEffortFor("gpt-5.5").used);
+    try std.testing.expectEqualStrings("", probeEffortFor("claude-sonnet-5").used);
+    for (cases) |case| {
+        const body = try buildProbeBody(allocator, case.model);
+        defer allocator.free(body);
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings(case.model, parsed.value.object.get("model").?.string);
+        const effort = parsed.value.object.get("reasoning_effort");
+        if (case.effort) |expected| {
+            try std.testing.expectEqualStrings(expected, effort.?.string);
+        } else {
+            try std.testing.expect(effort == null);
+        }
+        try std.testing.expectEqual(HEALTH_PROBE_MAX_OUTPUT_TOKENS, parsed.value.object.get("max_completion_tokens").?.integer);
+        try std.testing.expectEqual(HEALTH_PROBE_MAX_OUTPUT_TOKENS, parsed.value.object.get("max_tokens").?.integer);
+    }
+    // Gemini never gets MINIMAL, and never gets an explicit minimal mapping.
+    const gemini = try buildProbeBody(allocator, "gemini-4-argon");
+    defer allocator.free(gemini);
+    try std.testing.expect(std.mem.indexOf(u8, gemini, "MINIMAL") == null);
+
+    // The advertised budget must match what the conversion layer really
+    // enforces: GPT-5.5 is pinned to xhigh and floored, Gemini gets no cap.
+    try std.testing.expectEqual(@as(?i64, 32), probeOutputBudget("gpt-5.6-luna"));
+    try std.testing.expectEqual(@as(?i64, null), probeOutputBudget("gemini-4-argon"));
+    try std.testing.expectEqual(@as(?i64, providers.GPT_REASONING_OUTPUT_FLOOR), probeOutputBudget("gpt-5.5"));
+}
+
+test "probe model must come from the embedded catalog" {
+    try std.testing.expect(isKnownProbeModel("gpt-5.6-luna"));
+    try std.testing.expect(isKnownProbeModel("claude-sonnet-5"));
+    try std.testing.expect(isKnownProbeModel("gemini-4-argon"));
+    try std.testing.expect(isKnownProbeModel("gpt-5.6"));
+    try std.testing.expect(!isKnownProbeModel("gpt-9"));
+    try std.testing.expect(!isKnownProbeModel(""));
+    try std.testing.expect(!isKnownProbeModel("GPT-5.6-luna"));
 }

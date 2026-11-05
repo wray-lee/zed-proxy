@@ -15,6 +15,18 @@ export interface AccountsResponse {
   current: string
 }
 
+export interface AccountCredit {
+  ok: boolean
+  balance_usd?: number
+  cap_usd?: number
+  used_usd?: number
+  used_pct?: number
+  period_start?: string
+  resets_at?: string
+  total_balance_usd?: number
+  error?: string
+}
+
 export interface AccountQuotaStatus {
   name: string
   user_id: string
@@ -40,6 +52,8 @@ export interface AccountQuotaStatus {
   model_checked_at?: number
   model_latency_ms?: number
   error?: string
+  orb_configured?: boolean
+  credit?: AccountCredit
 }
 
 export interface AccountStatusesResponse {
@@ -64,8 +78,10 @@ export interface AccountHealthResponse {
   checked_at: number
   probe: {
     model: string
-    reasoning_effort: string
-    max_output_tokens: number
+    // null when the selected model/provider has no effort knob.
+    reasoning_effort: string | null
+    // null when the provider request carries no output cap (Gemini).
+    max_output_tokens: number | null
   }
   accounts: AccountHealthResult[]
 }
@@ -115,6 +131,25 @@ export async function fetchAccounts(): Promise<AccountsResponse> {
   return r.json()
 }
 
+export interface ModelInfo {
+  slug: string
+  display_name: string
+  description?: string
+  default_reasoning_level?: string
+  supported_reasoning_levels?: { effort: string; description?: string }[]
+}
+
+export interface ModelsResponse {
+  data?: { id: string; owned_by?: string }[]
+  models?: ModelInfo[]
+}
+
+export async function fetchModels(): Promise<ModelsResponse> {
+  const r = await authFetch('/v1/models', { cache: 'no-store' })
+  if (!r.ok) throw new Error(`${r.status}`)
+  return r.json()
+}
+
 export async function fetchAccountStatuses(): Promise<AccountStatusesResponse> {
   const r = await authFetch('/zed/accounts/status')
   if (!r.ok) throw new Error(`${r.status}`)
@@ -126,17 +161,38 @@ export async function fetchAccountStatuses(): Promise<AccountStatusesResponse> {
  * callers should only invoke this from a user action because it consumes one
  * deliberately tiny model request per selected account.
  */
-export async function checkAccountHealth(name?: string): Promise<AccountHealthResponse> {
+export async function checkAccountHealth(name?: string, model?: string): Promise<AccountHealthResponse> {
+  const body: { account?: string; model?: string } = {}
+  if (name) body.account = name
+  if (model) body.model = model
   const r = await authFetch('/zed/accounts/health', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(name ? { account: name } : {}),
+    body: JSON.stringify(body),
   })
   if (!r.ok) {
     const detail = await r.text()
     throw new Error(`${r.status}${detail ? `: ${detail}` : ''}`)
   }
   return r.json()
+}
+
+/** Store or clear the Orb portal link for an account; the link is never returned. */
+export async function setAccountOrb(account: string, url: string): Promise<void> {
+  const r = await authFetch('/zed/accounts/orb', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ account, url }),
+  })
+  if (r.ok) return
+  let code = `${r.status}`
+  try {
+    const data = await r.json()
+    if (data?.error) code = data.error
+  } catch {
+    // 非 JSON 错误体只报状态码。
+  }
+  throw new Error(code)
 }
 
 export async function switchAccount(name: string): Promise<void> {

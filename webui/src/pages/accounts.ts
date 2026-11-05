@@ -3,18 +3,31 @@ import {
   completeLogin,
   fetchAccounts,
   fetchAccountStatuses,
+  setAccountOrb,
   startLogin,
   switchAccount,
   type Account,
+  type AccountCredit,
   type AccountHealthResult,
   type AccountQuotaStatus,
+  type ModelInfo,
 } from '../api'
 import { locale, t } from '../i18n'
 import { icons } from '../icons'
+import {
+  catalogModels,
+  getProbeModel,
+  loadCatalog,
+  onProbeModelChange,
+  renderProbeModelOptions,
+  setProbeModel,
+} from '../probeModel'
 import { showToast } from '../toast'
 
 let accounts: Account[] = []
 let statuses = new Map<string, AccountQuotaStatus>()
+let models: ModelInfo[] = []
+let lastCheckedAt: number | undefined
 let refreshingAccountData = false
 let checkingAllAccounts = false
 const checkingAccounts = new Set<string>()
@@ -104,6 +117,22 @@ function quotaPresentation(status: AccountQuotaStatus | undefined) {
   }
 }
 
+function probeModelName(): string {
+  return models.find(model => model.slug === getProbeModel())?.display_name ?? getProbeModel()
+}
+
+/**
+ * The probe budget depends on the model: Gemini requests carry no cap and
+ * GPT-5.5 is floored by the conversion layer, so a fixed "32" would lie.
+ * Mirrors probeOutputBudget in src/server.zig.
+ */
+function probeBudgetLabel(): string {
+  const slug = getProbeModel()
+  if (slug.startsWith('gemini')) return t('不设输出上限', 'no output cap')
+  if (slug.startsWith('gpt-5.5')) return t('最多 32768 个输出 Token', 'at most 32768 output tokens')
+  return t('最多 32 个输出 Token', 'at most 32 output tokens')
+}
+
 function healthPresentation(status: AccountQuotaStatus | undefined, accountName: string) {
   const checking = checkingAllAccounts || checkingAccounts.has(accountName)
   if (checking) {
@@ -111,8 +140,8 @@ function healthPresentation(status: AccountQuotaStatus | undefined, accountName:
       className: 'checking',
       label: t('正在实测', 'Testing'),
       detail: t(
-        '仅使用 gpt-5.6-luna、none 推理档位和最多 32 个输出 Token',
-        'Uses only gpt-5.6-luna, none reasoning effort, and at most 32 output tokens',
+        `使用 ${probeModelName()}，${probeBudgetLabel()}`,
+        `Uses ${probeModelName()} with ${probeBudgetLabel()}`,
       ),
     }
   }
@@ -152,7 +181,10 @@ function healthPresentation(status: AccountQuotaStatus | undefined, accountName:
       return {
         className: 'unchecked',
         label: t('尚未实测', 'Not tested yet'),
-        detail: t('点击实测 Luna 后只发送一次最小推理请求', 'Click Test Luna to send a single minimal inference request'),
+        detail: t(
+          `点击“实测 ${probeModelName()}”后只发送一次最小推理请求`,
+          `Click Test ${probeModelName()} to send a single minimal inference request`,
+        ),
       }
   }
 }
@@ -182,6 +214,56 @@ function quotaValue(status: AccountQuotaStatus | undefined): { value: string; de
   }
 }
 
+function formatUsd(value: number | undefined): string {
+  return `$${(value ?? 0).toFixed(2)}`
+}
+
+function creditErrorLabel(error?: string): string {
+  switch (error) {
+    case 'invalid_link':
+      return t('链接无效或已被撤销', 'The link is invalid or was revoked')
+    case 'timeout':
+      return t('Orb 响应超时，稍后重试', 'Orb timed out; try again later')
+    case 'parse_error':
+      return t('无法解析 Orb 返回的数据', 'Could not parse the Orb response')
+    default:
+      return t('暂时无法读取 Orb 余额', 'Orb balance is temporarily unavailable')
+  }
+}
+
+function creditPresentation(credit: AccountCredit | undefined): string {
+  if (!credit) {
+    return `<p class="credit-note">${t('正在读取 Orb 余额', 'Reading Orb balance')}</p>`
+  }
+  if (!credit.ok) {
+    return `
+      <div class="credit-panel">
+        <div class="credit-head"><span>${t('Orb 额度', 'Orb credit')}</span><strong class="tone-warning">${t('读取失败', 'Unavailable')}</strong></div>
+        <p class="credit-note">${escapeHtml(creditErrorLabel(credit.error))}</p>
+      </div>
+    `
+  }
+
+  // 优先用金额算比例，used_pct 的刻度（0-1 或 0-100）由后端决定，不作假设。
+  const ratio = credit.cap_usd && credit.cap_usd > 0 ? ((credit.used_usd ?? 0) / credit.cap_usd) * 100 : credit.used_pct ?? 0
+  const pct = Math.min(100, Math.max(0, ratio))
+  return `
+    <div class="credit-panel">
+      <div class="credit-head">
+        <span>${t('Orb 额度', 'Orb credit')}</span>
+        <strong>${formatUsd(credit.used_usd)} / ${formatUsd(credit.cap_usd)} ${t('已用', 'used')}</strong>
+      </div>
+      <div class="credit-bar" role="img" aria-label="${t(`已用 ${pct.toFixed(0)}%`, `${pct.toFixed(0)}% used`)}">
+        <span style="width:${pct.toFixed(1)}%"></span>
+      </div>
+      <div class="credit-meta">
+        <span>${t('剩余 ', 'Remaining ')}${formatUsd(credit.balance_usd)}</span>
+        <span>${t('重置于 ', 'Resets ')}${escapeHtml(formatDate(credit.resets_at))}</span>
+      </div>
+    </div>
+  `
+}
+
 function mergeHealthResult(result: AccountHealthResult) {
   const existing = statuses.get(result.name)
   if (existing) statuses.set(result.name, { ...existing, ...result })
@@ -203,8 +285,9 @@ function renderOverview(checkedAt?: number) {
   const healthy = values.filter(status => status.model_state === 'healthy').length
   const cooling = accounts.filter(account => (statuses.get(account.name)?.cooldown_s ?? account.cooldown_s ?? 0) > 0).length
   const current = accounts.find(account => account.current)?.name ?? t('未选择', 'None selected')
-  const checked = checkedAt
-    ? new Date(checkedAt * 1000).toLocaleTimeString(locale, { hour12: false })
+  const checkedValue = checkedAt ?? lastCheckedAt
+  const checked = checkedValue
+    ? new Date(checkedValue * 1000).toLocaleTimeString(locale, { hour12: false })
     : t('等待刷新', 'Waiting for refresh')
 
   overview.innerHTML = `
@@ -219,7 +302,7 @@ function renderOverview(checkedAt?: number) {
       <small>${t('被动令牌检查结果', 'Passive token check result')}</small>
     </article>
     <article class="metric-card">
-      <span class="metric-label">${t('Luna 实测正常', 'Luna healthy')}</span>
+      <span class="metric-label">${escapeHtml(t(`${probeModelName()} 实测正常`, `${probeModelName()} healthy`))}</span>
       <strong class="metric-good">${statuses.size ? `${healthy} / ${accounts.length}` : '--'}</strong>
       <small>${t('真实最小推理请求结果', 'Result of a real minimal inference request')}</small>
     </article>
@@ -296,14 +379,30 @@ function renderAccountCards() {
           </div>
         </div>
 
+        <div class="account-credit">
+          ${status?.orb_configured
+            ? creditPresentation(status.credit)
+            : `
+              <div class="orb-link-row">
+                <span class="credit-label">${t('关联 Orb 余额', 'Link Orb balance')}</span>
+                <input type="url" class="orb-link-input" data-index="${index}" autocomplete="off" spellcheck="false" placeholder="${t('粘贴 Orb 门户链接（含 token 参数）', 'Paste the Orb portal link (with the token parameter)')}" />
+                <button class="button primary orb-save-button" data-index="${index}" type="button">${t('保存', 'Save')}</button>
+              </div>
+              <span class="orb-link-help">${t('粘贴 Orb 门户链接即可显示已用额度和重置日期；链接等同凭据，只保存在本机，页面不会回显。', 'Paste an Orb portal link to see usage and the reset date. The link is credential-equivalent, stored only locally, and never shown again.')}</span>
+            `}
+        </div>
+
         <footer class="account-card-footer">
           <a href="https://zed.dev/account/billing" target="_blank" rel="noreferrer">
             ${t('查看 Zed 账单', 'View Zed billing')} ${icons.externalLink}
           </a>
           <div>
             <button class="button secondary health-button" data-index="${index}" type="button" ${checking ? 'disabled' : ''}>
-              ${checking ? `<span class="spinner"></span>${t('检测中', 'Testing')}` : `${icons.activity} ${t('实测 Luna', 'Test Luna')}`}
+              ${checking ? `<span class="spinner"></span>${t('检测中', 'Testing')}` : `${icons.activity} ${escapeHtml(t(`实测 ${probeModelName()}`, `Test ${probeModelName()}`))}`}
             </button>
+            ${status?.orb_configured
+              ? `<button class="button secondary orb-unlink-button" data-index="${index}" type="button">${t('取消关联', 'Unlink')}</button>`
+              : ''}
             ${account.current
               ? `<span class="active-account-hint">${icons.check} ${t('已参与优先调度', 'In the priority pool')}</span>`
               : `<button class="button primary switch-button" data-index="${index}" type="button">${t('切换到此账号', 'Switch to this account')}</button>`}
@@ -336,6 +435,49 @@ function renderAccountCards() {
       if (account) void runHealthCheck(account.name)
     })
   })
+
+  list.querySelectorAll<HTMLButtonElement>('.orb-save-button').forEach(button => {
+    button.addEventListener('click', () => {
+      const index = Number(button.dataset.index)
+      const account = accounts[index]
+      const input = document.querySelector<HTMLInputElement>(`.orb-link-input[data-index="${index}"]`)
+      if (!account || !input) return
+      void saveOrbLink(account.name, input.value.trim(), button)
+    })
+  })
+
+  list.querySelectorAll<HTMLButtonElement>('.orb-unlink-button').forEach(button => {
+    button.addEventListener('click', () => {
+      const account = accounts[Number(button.dataset.index)]
+      if (account) void saveOrbLink(account.name, '', button)
+    })
+  })
+}
+
+async function saveOrbLink(accountName: string, url: string, button: HTMLButtonElement) {
+  if (!url && button.classList.contains('orb-save-button')) {
+    showToast(t('请先粘贴 Orb 门户链接', 'Paste the Orb portal link first'))
+    return
+  }
+  // 不把输入框里的链接写进 toast、日志或 DOM 的其它位置。
+  button.disabled = true
+  try {
+    await setAccountOrb(accountName, url)
+    showToast(url
+      ? t(`已保存 ${accountName} 的 Orb 链接`, `Saved the Orb link for ${accountName}`)
+      : t(`已取消 ${accountName} 的 Orb 关联`, `Unlinked Orb for ${accountName}`))
+    // 余额要等后台把 orb_url 写回账号并拉取，先按新状态重绘再刷新。
+    const status = statuses.get(accountName)
+    if (status) statuses.set(accountName, { ...status, orb_configured: Boolean(url), credit: undefined })
+    renderAccountCards()
+    await refreshAccountData(true)
+  } catch (error) {
+    const code = error instanceof Error ? error.message : ''
+    showToast(code === 'invalid orb link'
+      ? t('Orb 链接无效：需要 https://portal.withorb.com 且包含 token 参数', 'Invalid Orb link: it must be an https://portal.withorb.com URL with a token parameter')
+      : t(`Orb 链接保存失败：${code || t('未知错误', 'Unknown error')}`, `Failed to save the Orb link: ${code || t('unknown error', 'unknown error')}`))
+    button.disabled = false
+  }
 }
 
 function updateActionButtons() {
@@ -365,6 +507,7 @@ async function refreshAccountData(silent = false) {
   try {
     const response = await fetchAccountStatuses()
     statuses = new Map(response.accounts.map(status => [status.name, status]))
+    lastCheckedAt = response.checked_at
     renderOverview(response.checked_at)
     renderAccountCards()
     if (!silent)
@@ -394,14 +537,14 @@ async function runHealthCheck(accountName?: string) {
   renderAccountCards()
 
   try {
-    const response = await checkAccountHealth(accountName)
+    const response = await checkAccountHealth(accountName, getProbeModel())
     response.accounts.forEach(mergeHealthResult)
     renderOverview()
     const passed = response.accounts.filter(result => result.model_ok).length
     showToast(
       t(
-        `账号实测完成：${passed}/${response.accounts.length} 通过 · 仅 ${response.probe.model} · ${response.probe.reasoning_effort}`,
-        `Account test complete: ${passed}/${response.accounts.length} passed · only ${response.probe.model} · ${response.probe.reasoning_effort}`,
+        `账号实测完成：${passed}/${response.accounts.length} 通过 · ${response.probe.model} · ${response.probe.reasoning_effort ?? t('无推理档位', 'no effort knob')}`,
+        `Account test complete: ${passed}/${response.accounts.length} passed · ${response.probe.model} · ${response.probe.reasoning_effort ?? 'no effort knob'}`,
       ),
     )
   } catch (error) {
@@ -444,6 +587,10 @@ export function renderAccounts() {
         <p>${t('集中查看令牌、套餐、额度、冷却状态和真实模型链路，并控制当前优先调度账号。', 'Review tokens, plans, quota, cooldowns, and real model paths in one place, and control which account is scheduled first.')}</p>
       </div>
       <div class="heading-actions">
+        <label class="probe-model-picker">
+          <span>${t('实测模型', 'Test model')}</span>
+          <select id="probe-model-select" aria-label="${t('实测模型', 'Test model')}"></select>
+        </label>
         <button class="button secondary" id="refresh-accounts-button" type="button">${icons.refresh} ${t('刷新账号数据', 'Refresh account data')}</button>
         <button class="button primary" id="check-all-button" type="button">${icons.activity} ${t('全部账号实测', 'Test all accounts')}</button>
       </div>
@@ -451,7 +598,7 @@ export function renderAccounts() {
 
     <div class="notice-banner">
       <span>${icons.shield}</span>
-      <p><strong>${t('检测成本说明', 'About check cost')}</strong>${t('：令牌、套餐和额度检查不会调用模型；账号实测只会对每个选中账号调用一次 gpt-5.6-luna，使用 none 推理档位、短提示词和最多 32 个输出 Token，不会轮流检测其他模型。', ': Token, plan, and quota checks do not call any model. Account tests call gpt-5.6-luna once per selected account with none reasoning effort, a short prompt, and at most 32 output tokens; other models are not tested in turn.')}</p>
+      <p><strong>${t('检测成本说明', 'About check cost')}</strong><span id="probe-cost-note"></span></p>
     </div>
 
     <div class="metric-grid" id="account-overview"></div>
@@ -474,7 +621,48 @@ export function renderAccounts() {
   document.getElementById('add-account-button')!.addEventListener('click', () => void startOAuthLogin())
   document.getElementById('refresh-accounts-button')!.addEventListener('click', () => void refreshAccountData())
   document.getElementById('check-all-button')!.addEventListener('click', () => void runHealthCheck())
+
+  const select = document.getElementById('probe-model-select') as HTMLSelectElement
+  renderProbeModelOptions(select, models)
+  select.addEventListener('change', () => {
+    setProbeModel(select.value)
+    updateProbeCopy()
+  })
+  onProbeModelChange(() => {
+    renderProbeModelOptions(select, models)
+    updateProbeCopy()
+  })
+
+  updateProbeCopy()
+  void loadAccountModels()
   void loadAccounts()
+}
+
+/** 把当前实测模型写进按钮、提示和横幅；模型目录后到达时再刷新一次。 */
+function updateProbeCopy() {
+  const note = document.getElementById('probe-cost-note')
+  if (note) {
+    note.textContent = t(
+      `：令牌、套餐和额度检查不会调用模型；账号实测只会对每个选中账号调用一次 ${probeModelName()}，使用短提示词和${probeBudgetLabel()}，不会轮流检测其他模型。`,
+      `: Token, plan, and quota checks do not call any model. Account tests call ${probeModelName()} once per selected account with a short prompt and ${probeBudgetLabel()}; other models are not tested in turn.`,
+    )
+  }
+  if (accounts.length === 0) return
+  renderOverview(lastCheckedAt)
+  renderAccountCards()
+}
+
+async function loadAccountModels() {
+  const select = document.getElementById('probe-model-select') as HTMLSelectElement | null
+  if (!select) return
+  try {
+    const data = await loadCatalog()
+    models = catalogModels(data)
+    renderProbeModelOptions(select, models)
+    updateProbeCopy()
+  } catch {
+    // 模型目录不可用时保留下拉框里的默认项，实测仍会显式发送默认模型。
+  }
 }
 
 async function startOAuthLogin() {

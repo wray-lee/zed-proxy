@@ -5,6 +5,7 @@ zig-out-*/
 
 # 本地账号、活动账号和环境变量都可能包含凭据
 accounts.json
+accounts.json.tmp
 github_accounts.json
 active_account.txt
 api_key

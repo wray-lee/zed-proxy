@@ -14,3 +14,13 @@
 | `HTTPS_PROXY`, `ALL_PROXY` (also lowercase) | unset | Outbound HTTP proxy for upstream calls. When unset, the Windows system proxy is used on Windows. |
 
 The image sets `ZED_API_HOST=0.0.0.0`, `ZED_API_PORT=8001`, `ZED_LOGIN_PORT=58443`, and `ZED_DATA_DIR=/data`. The compose file passes `ZED_API_KEY` from `.env`.
+
+## `accounts.json`
+
+Each account entry holds `user_id`, the Zed `credential` JSON, and an optional `orb_url`:
+
+| Field | Meaning |
+| --- | --- |
+| `orb_url` | Orb portal link (`https://portal.withorb.com/?token=<orb-token>`) used for the credit balance display. Written by `POST /zed/accounts/orb`; login keeps it when it adds or rewrites accounts. |
+
+`orb_url` is a bearer credential: anyone who has the link can read that customer's Orb data. It is stored in plaintext in `accounts.json`, which is created `0600` on POSIX, and it is never returned by the API or written to a log. See [SECURITY.md](../SECURITY.md).
