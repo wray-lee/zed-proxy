@@ -102,7 +102,18 @@ jobs:
           expect 401 http://127.0.0.1:18090/zed/accounts
 
           docker exec zed-proxy-ci /usr/local/bin/zed-proxy healthcheck
-          test "$(docker inspect -f '{{.State.Health.Status}}' zed-proxy-ci)" = "healthy"
+          # The image's first probe runs after start_period + interval (35s);
+          # until then Docker reports "starting".
+          health=""
+          for _ in $(seq 1 60); do
+            health=$(docker inspect -f '{{.State.Health.Status}}' zed-proxy-ci)
+            if [ "$health" = "healthy" ]; then break; fi
+            sleep 1
+          done
+          if [ "$health" != "healthy" ]; then
+            echo "container health is $health, expected healthy"
+            exit 1
+          fi
           test "$(docker exec zed-proxy-ci id -u)" = "10001"
           test "$(docker exec zed-proxy-ci stat -c '%a' /data)" = "700"
           test -z "$(docker exec zed-proxy-ci sh -c 'command -v curl || true')"
