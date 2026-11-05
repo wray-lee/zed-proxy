@@ -439,7 +439,7 @@ pub async fn accounts_health_handler(
         },
         None => "null".to_string(),
     };
-    let budget = match plan.max_output_tokens {
+    let budget = match crate::probe::reported_budget(plan.max_output_tokens) {
         Some(value) => value.to_string(),
         None => "null".to_string(),
     };

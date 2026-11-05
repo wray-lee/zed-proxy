@@ -87,7 +87,7 @@
 | GPT-5.5 系列 | 不发（编码器固定 `xhigh`） | `"xhigh"` | `32768` |
 | 目录声明了 `none` / `low` | 该值 | 该值 | `32` |
 | 没有档位的 OpenAI 模型（如 `gpt-5-nano`） | 不发 | `null` | `1024`（受目录上限约束） |
-| Google provider | `"low"`（绝不发 `MINIMAL`） | `"low"` | `null`（请求不带输出上限） |
+| Google provider | `"low"`（绝不发 `MINIMAL`） | `"low"` | `min(max(32, 32), 目录上限)`，即 `32` |
 
 响应报告实际使用的模型、推理强度与输出预算，键顺序固定：
 

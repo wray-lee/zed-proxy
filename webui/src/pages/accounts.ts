@@ -126,7 +126,7 @@ function probeModelName(): string {
 /**
  * The probe budget depends on the model: Gemini requests carry no cap and
  * GPT-5.5 is floored by the conversion layer, so a fixed "32" would lie.
- * Mirrors probeOutputBudget in src/server.zig.
+ * Mirrors `output_budget` in src/provider/openai.rs.
  */
 function probeBudgetLabel(): string {
   const slug = getProbeModel()

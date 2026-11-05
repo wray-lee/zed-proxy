@@ -9,7 +9,7 @@
 - The arm64 image was built and started only under QEMU. It has not run on real arm64 hardware.
 - `ZED_UPSTREAM_BASE` exists so the proxy can be pointed at a fake upstream for differential tests. It has only ever been used against local fakes; the real `cloud.zed.dev` behaviour with a custom prefix is unverified.
 - Real-upstream verification of the Rust rewrite is pending. The 0.3.0 behaviour has been checked against a local fake upstream and a 0.2.2 differential baseline, not against `cloud.zed.dev` with a real account.
-- Gemini tool calling is unverified against the real upstream: the schema cleaning, the tool-call round trip, the output ceiling (`max_output_tokens` is not sent to Gemini, so the probe reports `null`), `inlineData` images, `toolConfig`/`functionCallingConfig`, and `thoughtSignature` passthrough.
+- Gemini tool calling is unverified against the real upstream: the schema cleaning, the tool-call round trip, the output ceiling (Gemini now receives `generationConfig.maxOutputTokens`, derived from the catalogue limit; no real call has confirmed the upstream accepts it), `inlineData` images, `toolConfig`/`functionCallingConfig`, and `thoughtSignature` passthrough.
 - The output budget of the OpenAI provider is clamped to the catalogue maximum (for example 999999 becomes 128000). Only the local fake accepted or rejected this; whether Zed's real upstream caps the same way is unverified.
 - The Gemini `systemInstruction` mapping and the `thinkingLevel` mapping are covered by local tests only.
 - `/v1/responses` to Gemini models is implemented but each such cell of the conversion matrix is only checked against the fake upstream.

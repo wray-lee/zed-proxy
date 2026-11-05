@@ -160,8 +160,12 @@ pub fn probe_plan(catalog: &Catalog, model: &str) -> Result<ProbePlan, GatewayEr
             Some(PROBE_CLIENT_BUDGET),
             capabilities.max_output_tokens,
         )),
-        // Gemini currently receives no output ceiling at all (spec 80 §2.2).
-        Provider::Google => None,
+        // The Google encoder always sends `maxOutputTokens`, so the report
+        // must carry the same number (spec 25 §7.2, D22-1).
+        Provider::Google => Some(crate::provider::google::max_output_tokens(
+            Some(PROBE_CLIENT_BUDGET),
+            capabilities.max_output_tokens,
+        )),
     };
     Ok(ProbePlan {
         model: model.to_string(),
@@ -426,10 +430,11 @@ mod tests {
         );
         assert_eq!(claude.max_output_tokens, Some(32));
 
-        // Gemini carries no output ceiling, so the report is null.
+        // Gemini reports the same ceiling the encoder sends (spec 25 §7.2):
+        // `min(max(32,32), 65536)` = 32 for gemini-4-argon.
         let gemini = probe_plan(&catalog, "gemini-4-argon").unwrap();
         assert_eq!(gemini.effort.send.as_deref(), Some("low"));
-        assert_eq!(gemini.max_output_tokens, None);
+        assert_eq!(gemini.max_output_tokens, Some(32));
 
         // A level-less OpenAI model still gets the 1024 floor.
         let nano = probe_plan(&catalog, "gpt-5-nano").unwrap();

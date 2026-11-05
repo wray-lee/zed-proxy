@@ -61,6 +61,10 @@ HTTP contract is preserved; the changes below are the ones a user can notice.
   `client/users/me` body unchanged. Both answer `400 {"error":"no account"}`
   without an active account; token failures are `500 {"error":"internal
   error"}` and upstream failures `502 {"error":"failed to fetch user info"}`.
+- Gemini requests now carry `generationConfig.maxOutputTokens`, computed as
+  `min(max(client value, 32), catalogue max_output_tokens)` (catalogue missing:
+  1048576), or the catalogue value when the client sends none. The health probe
+  reports the same number instead of `null`.
 
 ### Fixed
 

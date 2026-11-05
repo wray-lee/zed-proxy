@@ -80,7 +80,7 @@ export interface AccountHealthResponse {
     model: string
     // null when the selected model/provider has no effort knob.
     reasoning_effort: string | null
-    // null when the provider request carries no output cap (Gemini).
+    // null when the provider request carries no output cap.
     max_output_tokens: number | null
   }
   accounts: AccountHealthResult[]

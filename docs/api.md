@@ -87,7 +87,7 @@ The probe is a single low-cost request built for the chosen model, with effort d
 | GPT-5.5 family | omitted (the encoder pins `xhigh`) | `"xhigh"` | `32768` |
 | Catalogue declares `none` / `low` | that value | that value | `32` |
 | OpenAI model with no effort levels (e.g. `gpt-5-nano`) | omitted | `null` | `1024` (catalogue max capped) |
-| Google provider | `"low"` (never `MINIMAL`) | `"low"` | `null` (no output ceiling is sent) |
+| Google provider | `"low"` (never `MINIMAL`) | `"low"` | `min(max(32, 32), catalogue max)`, i.e. `32` |
 
 The response reports the model, the reasoning effort and the output budget actually used. Key order is fixed:
 

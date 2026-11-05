@@ -23,6 +23,23 @@ use super::{ProviderEncoder, StreamDecoder};
 /// (spec 22 §4). It must be written as a float literal.
 pub const FIXED_TEMPERATURE: &str = "1.0";
 
+/// Ceiling used when the catalogue has no `max_output_tokens` (spec 22 §4.2).
+pub const FALLBACK_MAX_OUTPUT_TOKENS: i64 = 1_048_576;
+/// Client budgets below this are raised to it (spec 25 §3.2).
+pub const MIN_OUTPUT_TOKENS: i64 = 32;
+
+/// `maxOutputTokens` for one request: `min(max(client, 32), catalogue max)`,
+/// or the catalogue max when the client sent none (spec 22 §4.2, D22-1 A).
+pub fn max_output_tokens(client: Option<i64>, catalog_max: Option<i64>) -> i64 {
+    let ceiling = catalog_max
+        .filter(|value| *value > 0)
+        .unwrap_or(FALLBACK_MAX_OUTPUT_TOKENS);
+    match client.filter(|value| *value > 0) {
+        Some(value) => value.max(MIN_OUTPUT_TOKENS).min(ceiling),
+        None => ceiling,
+    }
+}
+
 pub struct GoogleProvider;
 
 impl ProviderEncoder for GoogleProvider {
@@ -63,6 +80,9 @@ impl ProviderEncoder for GoogleProvider {
             ",\"generationConfig\":{\"candidateCount\":1,\"stopSequences\":[],\"temperature\":",
         );
         out.push_str(FIXED_TEMPERATURE);
+        let budget = max_output_tokens(request.max_output_tokens, capabilities.max_output_tokens);
+        out.push_str(",\"maxOutputTokens\":");
+        out.push_str(&budget.to_string());
         out.push_str(",\"thinkingConfig\":{");
         let level = if capabilities.supports_thinking {
             thinking_level(
@@ -885,7 +905,7 @@ mod tests {
         };
         assert_eq!(
             encode(&request),
-            r#"{"model":"models/gemini-3-flash","generationConfig":{"candidateCount":1,"stopSequences":[],"temperature":1.0,"thinkingConfig":{"includeThoughts":true}},"contents":[{"parts":[{"text":"ping"}],"role":"user"}]}"#
+            r#"{"model":"models/gemini-3-flash","generationConfig":{"candidateCount":1,"stopSequences":[],"temperature":1.0,"maxOutputTokens":65536,"thinkingConfig":{"includeThoughts":true}},"contents":[{"parts":[{"text":"ping"}],"role":"user"}]}"#
         );
         let body = encode(&request);
         for banned in [
@@ -898,6 +918,35 @@ mod tests {
         ] {
             assert!(!body.contains(banned), "{banned} in {body}");
         }
+    }
+
+    #[test]
+    fn max_output_tokens_clamps_to_the_catalog_and_defaults_to_it() {
+        assert_eq!(max_output_tokens(Some(200_000), Some(65_536)), 65_536);
+        assert_eq!(max_output_tokens(Some(8_192), Some(65_536)), 8_192);
+        assert_eq!(max_output_tokens(Some(1), Some(65_536)), 32);
+        assert_eq!(max_output_tokens(None, Some(65_536)), 65_536);
+        assert_eq!(max_output_tokens(Some(200_000), None), 200_000);
+        assert_eq!(max_output_tokens(None, None), FALLBACK_MAX_OUTPUT_TOKENS);
+        assert_eq!(max_output_tokens(Some(1), None), MIN_OUTPUT_TOKENS);
+        // Non-positive client values count as "not given".
+        assert_eq!(max_output_tokens(Some(0), Some(65_536)), 65_536);
+    }
+
+    #[test]
+    fn generation_config_carries_the_clamped_budget() {
+        let request = NeutralRequest {
+            model: "gemini-4-argon".to_string(),
+            messages: vec![message(Role::User, vec![text("hi")])],
+            max_output_tokens: Some(200_000),
+            ..Default::default()
+        };
+        let body = encode(&request);
+        assert!(
+            body.contains(r#""temperature":1.0,"maxOutputTokens":65536,"thinkingConfig""#),
+            "{body}"
+        );
+        assert!(!body.contains("max_output_tokens"), "{body}");
     }
 
     #[test]
@@ -1067,7 +1116,7 @@ mod tests {
         };
         assert_eq!(
             encode(&request),
-            r#"{"model":"models/gemini-4-argon","systemInstruction":{"parts":[{"text":"Be brief"}]},"generationConfig":{"candidateCount":1,"stopSequences":[],"temperature":1.0,"thinkingConfig":{"thinkingLevel":"MEDIUM","includeThoughts":true}},"tools":[{"functionDeclarations":[{"name":"Bash","description":"Run a command","parameters":{"type":"object","properties":{"command":{"type":"string"},"env":{"type":"object"}},"required":["command","env"]}}]}],"contents":[{"parts":[{"text":"ls"}],"role":"user"},{"parts":[{"functionCall":{"name":"Bash","args":{"command":"ls"}}}],"role":"model"},{"parts":[{"functionResponse":{"name":"Bash","response":{"result":"a.txt"}}}],"role":"user"}]}"#
+            r#"{"model":"models/gemini-4-argon","systemInstruction":{"parts":[{"text":"Be brief"}]},"generationConfig":{"candidateCount":1,"stopSequences":[],"temperature":1.0,"maxOutputTokens":65536,"thinkingConfig":{"thinkingLevel":"MEDIUM","includeThoughts":true}},"tools":[{"functionDeclarations":[{"name":"Bash","description":"Run a command","parameters":{"type":"object","properties":{"command":{"type":"string"},"env":{"type":"object"}},"required":["command","env"]}}]}],"contents":[{"parts":[{"text":"ls"}],"role":"user"},{"parts":[{"functionCall":{"name":"Bash","args":{"command":"ls"}}}],"role":"model"},{"parts":[{"functionResponse":{"name":"Bash","response":{"result":"a.txt"}}}],"role":"user"}]}"#
         );
     }
 
