@@ -691,12 +691,14 @@ mod tests {
             ),
             "{body}"
         );
-        let empty = AccountStore::load(temp_dir("empty"), 0);
+        let empty_dir = temp_dir("empty");
+        let empty = AccountStore::load(&empty_dir, 0);
         assert_eq!(
             String::from_utf8(accounts_body(&empty, 0)).unwrap(),
             r#"{"accounts":[],"current":""}"#
         );
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&empty_dir);
     }
 
     #[tokio::test]
