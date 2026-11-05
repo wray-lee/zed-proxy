@@ -1715,6 +1715,39 @@ mod tests {
     }
 
     #[test]
+    fn start_id_reaches_the_created_and_completed_frames() {
+        let mut state = SseState::new("gpt-5.6-sol", 1_762_300_000);
+        let got = run(
+            &[
+                StreamEvent::Start {
+                    id: Some("resp_fixture_1".to_string()),
+                },
+                StreamEvent::TextDelta {
+                    delta: "x".to_string(),
+                },
+                StreamEvent::End {
+                    reason: StopReason::Stop,
+                },
+            ],
+            &mut state,
+        );
+        assert!(
+            got[0].1.contains(r#""id":"resp_fixture_1""#),
+            "{}",
+            got[0].1
+        );
+        assert!(
+            got[1].1.contains(r#""id":"resp_fixture_1""#),
+            "{}",
+            got[1].1
+        );
+        let (event, data) = got.last().unwrap();
+        assert_eq!(event, "response.completed");
+        assert!(data.contains(r#""id":"resp_fixture_1""#), "{data}");
+        assert!(!data.contains(RESPONSE_ID), "{data}");
+    }
+
+    #[test]
     fn empty_reply_still_emits_created_in_progress_and_completed() {
         let mut state = SseState::new("gpt-5.6-sol", 1_762_300_000);
         let got = run(&[], &mut state);

@@ -12,8 +12,8 @@ use crate::catalog::ModelCapabilities;
 use crate::catalog::Provider as ProviderKind;
 use crate::error::GatewayError;
 use crate::neutral::{
-    ContentBlock, ImageSource, Message, NeutralRequest, NeutralResponse, Role, StopReason,
-    StreamEvent, SystemBlock, ToolChoice, ToolDef, ToolResult, ToolUse, Usage,
+    ContentBlock, ImageSource, NeutralRequest, NeutralResponse, Role, StopReason, StreamEvent,
+    SystemBlock, ToolChoice, ToolDef, ToolResult, ToolUse, Usage,
 };
 
 use super::{clean_line, is_stream_ended, parse_status_failed, ProviderEncoder, StreamDecoder};
@@ -621,9 +621,26 @@ impl ResponsesDecoder {
         let mut events = Vec::new();
         let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
         match event_type {
-            "response.created"
-            | "response.in_progress"
-            | "ping"
+            // The client writes `response.created` before `response.completed`
+            // arrives, so the upstream id has to be carried by `Start`
+            // (spec 42 §2.1); `in_progress` is the fallback when an upstream
+            // skips `created`.
+            "response.created" | "response.in_progress" => {
+                let id = event
+                    .get("response")
+                    .and_then(|response| response.get("id"))
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty());
+                if let Some(id) = id {
+                    if self.response_id.is_none() {
+                        self.response_id = Some(id.to_string());
+                        events.push(StreamEvent::Start {
+                            id: Some(id.to_string()),
+                        });
+                    }
+                }
+            }
+            "ping"
             | "response.content_part.added"
             | "response.content_part.done"
             | "response.output_text.done"
@@ -942,6 +959,7 @@ impl StreamDecoder for ResponsesDecoder {
 mod tests {
     use super::*;
     use crate::catalog::EffortLevel;
+    use crate::neutral::Message;
 
     fn level(value: &str) -> EffortLevel {
         EffortLevel {
@@ -1391,6 +1409,41 @@ mod tests {
 {"event":{"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}}}"#;
         let response = OpenAiProvider.decode_response(body).unwrap();
         assert_eq!(response.text, "hi");
+    }
+
+    #[test]
+    fn response_created_carries_the_upstream_id_in_start() {
+        let mut decoder = ResponsesDecoder::default();
+        let events = decoder
+            .push_line(
+                r#"{"event":{"type":"response.created","response":{"id":"resp_fixture_1"}}}"#,
+            )
+            .unwrap();
+        assert_eq!(
+            events,
+            vec![StreamEvent::Start {
+                id: Some("resp_fixture_1".to_string())
+            }]
+        );
+        // The later `in_progress` must not repeat the start event.
+        assert!(decoder
+            .push_line(
+                r#"{"event":{"type":"response.in_progress","response":{"id":"resp_fixture_1"}}}"#
+            )
+            .unwrap()
+            .is_empty());
+
+        // An upstream that skips `response.created` still supplies the id.
+        let mut decoder = ResponsesDecoder::default();
+        let events = decoder
+            .push_line(r#"{"event":{"type":"response.in_progress","response":{"id":"resp_2"}}}"#)
+            .unwrap();
+        assert_eq!(
+            events,
+            vec![StreamEvent::Start {
+                id: Some("resp_2".to_string())
+            }]
+        );
     }
 
     #[test]
