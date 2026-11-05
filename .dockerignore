@@ -1,6 +1,5 @@
 .git
-.zig-cache
-zig-out*
+target
 webui/node_modules
 webui/dist
 accounts.json
@@ -9,6 +8,7 @@ api_key
 *.pem
 *.key
 *.log
+logs
 tmp
 data
 .write_probe

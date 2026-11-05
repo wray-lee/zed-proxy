@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, rust-rewrite]
   pull_request:
 
 permissions:
@@ -18,18 +18,23 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: webui/package-lock.json
-      - name: Build WebUI
+      - name: WebUI type check
         run: |
           cd webui
           npm ci
-          npm run build
-      - name: Install Zig 0.15.2
+          npx tsc --noEmit
+      - name: Build WebUI
         run: |
-          curl -fsSL https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz -o /tmp/zig.tar.xz
-          sudo tar -xJf /tmp/zig.tar.xz -C /opt
-          echo /opt/zig-x86_64-linux-0.15.2 >> "$GITHUB_PATH"
+          cd webui
+          npm run build
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
       - name: Test
-        run: zig build test --summary all
+        run: cargo test --locked
 
   docker:
     runs-on: ubuntu-latest
@@ -95,3 +100,10 @@ jobs:
           expect 200 -H 'Authorization: Bearer ci-test-key' http://127.0.0.1:18090/v1/models
           expect 200 -H 'x-api-key: ci-test-key' http://127.0.0.1:18090/v1/models
           expect 401 http://127.0.0.1:18090/zed/accounts
+
+          docker exec zed-proxy-ci /usr/local/bin/zed-proxy healthcheck
+          test "$(docker inspect -f '{{.State.Health.Status}}' zed-proxy-ci)" = "healthy"
+          test "$(docker exec zed-proxy-ci id -u)" = "10001"
+          test "$(docker exec zed-proxy-ci stat -c '%a' /data)" = "700"
+          test -z "$(docker exec zed-proxy-ci sh -c 'command -v curl || true')"
+          test -z "$(docker exec zed-proxy-ci sh -c 'command -v openssl || true')"
