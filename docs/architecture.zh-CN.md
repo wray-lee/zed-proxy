@@ -56,6 +56,7 @@ provider 分发读取 Zed 目录中该模型的 `provider` 字段。只有目录
 | `src/error.rs` | 错误分类（`request`、`auth`、`plan`、`rate_limit`、`transient`、`client_disconnect`）、HTTP 状态与各协议错误体。 |
 | `webui/` | TypeScript 管理页，由 Vite 构建成单个 HTML 文件。 |
 | `build.rs` | `webui/dist/index.html` 缺失时让构建失败，避免静默发布空白页面。 |
+| `tools/genmodels.py`、`tools/catalog-fixture.json` | 重新生成内嵌兜底目录：脚本读取脱敏的 Zed `/models` 夹具并写出 `src/models.json`（键顺序是规范；C3 的三个上限字段仅在为正整数时复制）。运行 `python3 -I tools/genmodels.py`；脚本只用标准库，两个路径都相对脚本自身位置解析。 |
 
 ## 请求流程
 

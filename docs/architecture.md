@@ -56,6 +56,7 @@ Provider dispatch reads the `provider` field of the model from Zed's catalogue. 
 | `src/error.rs` | Error kinds (`request`, `auth`, `plan`, `rate_limit`, `transient`, `client_disconnect`), HTTP status and protocol error bodies. |
 | `webui/` | TypeScript management page, built by Vite into a single HTML file. |
 | `build.rs` | Fails the build when `webui/dist/index.html` is missing, so a blank page can never be shipped silently. |
+| `tools/genmodels.py`, `tools/catalog-fixture.json` | Regenerates the embedded fallback catalogue: the script reads the sanitised Zed `/models` fixture and writes `src/models.json` (key order matters; the three C3 limit fields are copied only when they are positive integers). Run `python3 -I tools/genmodels.py`; it is stdlib-only and resolves both paths relative to its own location. |
 
 ## Request flow
 
