@@ -13,9 +13,9 @@ pub mod stop;
 pub mod tools;
 pub mod usage;
 
-pub use content::{
-    ContentBlock, ImageSource, Message, Opaque, Role, SystemBlock, ToolResult, ToolUse,
-};
+#[cfg(test)]
+pub use content::Opaque;
+pub use content::{ContentBlock, ImageSource, Message, Role, SystemBlock, ToolResult, ToolUse};
 pub use event::{BlockKind, StreamEvent};
 pub use request::{NeutralRequest, Reasoning};
 pub use response::NeutralResponse;

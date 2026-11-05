@@ -8,7 +8,6 @@ use bytes::Bytes;
 use futures_util::Stream;
 
 use crate::error::GatewayError;
-use crate::neutral::StreamEvent;
 
 /// One upstream line may be at most 64 KiB (spec 16 §2).
 pub const MAX_LINE_BYTES: usize = 65_536;
@@ -26,7 +25,6 @@ pub struct SseState {
     pub model: String,
     pub created_unix: i64,
     pub response_id: Option<String>,
-    pub committed: bool,
     pub next_block_index: u64,
     pub open_block: Option<u64>,
     pub tool_count: u64,
@@ -129,26 +127,6 @@ impl LineBuffer {
     }
 }
 
-/// Turn one parsed upstream line into an event, dropping protocol metadata
-/// (spec 16 §2, §3): blank lines, non-JSON lines and `stream_ended`.
-pub fn parse_line(line: &str) -> Option<serde_json::Value> {
-    let cleaned = crate::provider::clean_line(line);
-    if cleaned.is_empty() || !cleaned.starts_with('{') {
-        return None;
-    }
-    let value: serde_json::Value = serde_json::from_str(cleaned).ok()?;
-    if crate::provider::is_stream_ended(&value) {
-        return None;
-    }
-    Some(value)
-}
-
-/// Classify the end-of-stream situation for the retry decision
-/// (spec 16 §5): HTTP 200, no model event, not yet committed.
-pub fn is_empty_stream(status: u16, saw_model_event: bool, committed: bool) -> bool {
-    status == 200 && !saw_model_event && !committed
-}
-
 /// Structural `{"status":"stream_ended"}` match on a raw upstream line; the
 /// reader stops here without waiting for EOF (spec 16 §3). The provider
 /// decoders drop the marker themselves, so the shell needs its own check to
@@ -198,23 +176,6 @@ mod tests {
         let mut lines = buffer.push(&long);
         lines.extend(buffer.push(b"\nnext\n"));
         assert_eq!(lines, vec!["next".to_string()]);
-    }
-
-    #[test]
-    fn parse_line_skips_non_json_and_stream_ended() {
-        assert!(parse_line("").is_none());
-        assert!(parse_line("ping").is_none());
-        assert!(parse_line(r#"{"status":"stream_ended"}"#).is_none());
-        assert!(parse_line("data: {\"a\":1}").is_some());
-        assert!(parse_line("{not json").is_none());
-    }
-
-    #[test]
-    fn empty_stream_requires_http_200_without_events_or_commit() {
-        assert!(is_empty_stream(200, false, false));
-        assert!(!is_empty_stream(200, true, false));
-        assert!(!is_empty_stream(200, false, true));
-        assert!(!is_empty_stream(502, false, false));
     }
 
     #[test]

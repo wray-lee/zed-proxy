@@ -64,40 +64,6 @@ pub fn encoder_for(kind: ProviderKind) -> Box<dyn ProviderEncoder> {
     }
 }
 
-/// Placeholder decoder used until each provider's streaming parser lands. It
-/// accepts every line (so buffered paths can drain a stream) and reports a
-/// single terminal error instead of emitting model events.
-pub struct StubStreamDecoder {
-    kind: ProviderKind,
-}
-
-impl StubStreamDecoder {
-    pub fn new(kind: ProviderKind) -> Self {
-        Self { kind }
-    }
-}
-
-impl StreamDecoder for StubStreamDecoder {
-    fn push_line(&mut self, _line: &str) -> Result<Vec<StreamEvent>, GatewayError> {
-        Ok(Vec::new())
-    }
-
-    fn finish(&mut self) -> Result<Vec<StreamEvent>, GatewayError> {
-        Err(GatewayError::not_implemented(&format!(
-            "{} stream decoding",
-            self.kind.as_str()
-        )))
-    }
-
-    fn saw_model_event(&self) -> bool {
-        false
-    }
-
-    fn failure(&self) -> Option<GatewayError> {
-        None
-    }
-}
-
 /// The `completions` envelope (spec 10 §3): compact JSON, fixed key order,
 /// two independent random UUIDv4s.
 pub fn build_envelope(

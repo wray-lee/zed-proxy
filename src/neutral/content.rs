@@ -75,9 +75,15 @@ pub enum ContentBlock {
     Image(ImageSource),
     ToolUse(ToolUse),
     ToolResult(ToolResult),
-    /// Reasoning / thinking text produced by the model.
+    /// Reasoning / thinking text produced by the model. History thinking blocks
+    /// are dropped on purpose (spec 41 §1.3), so no decoder builds this today;
+    /// it stays part of the neutral part set (spec 45 §1.1).
+    #[allow(dead_code)]
     Thinking(String),
     /// Server-side compaction summary (spec 21 §7).
     Compaction(String),
+    /// Responses-native item replayed verbatim (spec 20 §4.4); only the OpenAI
+    /// client decodes it, and only for a native passthrough request.
+    #[allow(dead_code)]
     Opaque(Opaque),
 }

@@ -7,7 +7,6 @@ use serde_json::Value;
 use crate::error::{ErrorKind, GatewayError};
 use crate::upstream::client::{classify_attempt, UpstreamClient};
 use crate::upstream::token::{me_request, organization_id, token_request};
-use crate::upstream::UpstreamRequest;
 
 use super::store::{AccountSnapshot, AccountStore};
 
@@ -462,8 +461,7 @@ fn apply_billing(report: &mut AccountStatusReport, billing: BillingSummary) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::upstream::client::{BoxFuture, UpstreamRequest, UpstreamResponse};
-    use crate::upstream::UpstreamStream;
+    use crate::upstream::client::{BoxFuture, UpstreamRequest, UpstreamResponse, UpstreamStream};
 
     fn profile(plan: Value) -> Value {
         serde_json::json!({

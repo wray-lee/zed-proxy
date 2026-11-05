@@ -7,7 +7,6 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use serde::de::{IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -56,10 +55,6 @@ impl Account {
     pub fn is_healthy(&self, now: i64) -> bool {
         now >= self.disabled_until
     }
-
-    pub fn cooldown_s(&self, now: i64) -> i64 {
-        (self.disabled_until - now).max(0)
-    }
 }
 
 /// Credential-free copy used by request handlers so they never hold the lock
@@ -83,7 +78,6 @@ pub enum AccountError {
     NotFound,
     FieldTooLong,
     FileTooLarge,
-    InvalidCredential,
     Io(String),
 }
 
@@ -95,7 +89,6 @@ impl AccountError {
             AccountError::NotFound => "not_found",
             AccountError::FieldTooLong => "field_too_long",
             AccountError::FileTooLarge => "file_too_large",
-            AccountError::InvalidCredential => "invalid_credential",
             AccountError::Io(_) => "io_error",
         }
     }
@@ -107,7 +100,6 @@ impl fmt::Display for AccountError {
             AccountError::NotFound => write!(f, "account not found"),
             AccountError::FieldTooLong => write!(f, "field too long"),
             AccountError::FileTooLarge => write!(f, "accounts file too large"),
-            AccountError::InvalidCredential => write!(f, "invalid credential"),
             AccountError::Io(message) => write!(f, "{message}"),
         }
     }
@@ -129,7 +121,6 @@ pub struct AccountStore {
     current: Mutex<usize>,
     write_lock: Mutex<()>,
     data_dir: PathBuf,
-    loaded_at: i64,
 }
 
 impl fmt::Debug for AccountStore {
@@ -612,7 +603,6 @@ impl AccountStore {
             current: Mutex::new(current),
             write_lock: Mutex::new(()),
             data_dir,
-            loaded_at: now,
         }
     }
 
@@ -891,16 +881,6 @@ impl AccountStore {
         }
     }
 
-    pub fn loaded_at(&self) -> i64 {
-        self.loaded_at
-    }
-
-    /// Cooldown for the next failure without touching any account; exposed for
-    /// the proxy loop and tests.
-    pub fn failure_cooldown(&self, kind: ErrorKind, failures_before: u32) -> i64 {
-        Self::cooldown_for(kind, failures_before.saturating_add(1))
-    }
-
     /// Map an account error to the HTTP-facing message (spec 70 §3.19).
     pub fn save_error_body(err: &AccountError) -> GatewayError {
         let mut gateway = GatewayError::new(
@@ -1029,9 +1009,8 @@ mod tests {
     fn auth_and_transient_share_one_counter() {
         // Two credential failures then one transient failure: the transient
         // branch sees 3 and benches the account (spec 50 §5.1).
-        let store = AccountStore::load(temp_dir("counter"), 0);
-        assert_eq!(store.failure_cooldown(ErrorKind::Transient, 2), 20);
-        assert_eq!(store.failure_cooldown(ErrorKind::Auth, 2), 3600);
+        assert_eq!(AccountStore::cooldown_for(ErrorKind::Transient, 3), 20);
+        assert_eq!(AccountStore::cooldown_for(ErrorKind::Auth, 3), 3600);
     }
 
     #[test]

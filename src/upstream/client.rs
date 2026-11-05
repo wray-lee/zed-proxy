@@ -28,11 +28,12 @@ pub const X_ZED_CLIENT_SUPPORTS_STREAM_ENDED: &str =
 pub const X_ZED_SYSTEM_ID: &str = "x-zed-system-id";
 
 pub const COMPLETIONS_TIMEOUT: Duration = Duration::from_secs(120);
-pub const COMPLETIONS_STREAM_TIMEOUT: Duration = Duration::from_secs(300);
+/// Stream timeout, named by spec 16 §3 (`proxy::stream::STREAM_TIMEOUT_SECS`).
+pub const COMPLETIONS_STREAM_TIMEOUT: Duration =
+    Duration::from_secs(crate::proxy::stream::STREAM_TIMEOUT_SECS);
 pub const LLM_TOKEN_TIMEOUT: Duration = Duration::from_secs(15);
 pub const MODELS_TIMEOUT: Duration = Duration::from_secs(15);
 pub const USER_ME_TIMEOUT: Duration = Duration::from_secs(15);
-pub const ORB_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Non-streaming `completions` buffer cap (spec 10 §8).
 pub const MAX_COMPLETIONS_BUFFER: usize = 4 * 1024 * 1024;
@@ -66,10 +67,6 @@ pub struct UpstreamResponse {
 impl UpstreamResponse {
     pub fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
-    }
-
-    pub fn body_str(&self) -> std::borrow::Cow<'_, str> {
-        String::from_utf8_lossy(&self.body)
     }
 }
 
@@ -344,11 +341,6 @@ pub const MAX_ATTEMPTS: u32 = 3;
 pub const TRANSIENT_BACKOFF: [Duration; 2] = [Duration::from_secs(1), Duration::from_secs(2)];
 /// Backoff between 429 attempts (spec 10 §7).
 pub const RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(3);
-
-/// `{"status":"stream_ended"}` — structural match only (spec 10 §4.5).
-pub fn is_stream_ended(value: &serde_json::Value) -> bool {
-    value.get("status").and_then(serde_json::Value::as_str) == Some("stream_ended")
-}
 
 /// `{"status":{"failed":{…}}}` — the HTTP-200 failure wrapper (spec 10 §4.6).
 /// `message` is preserved verbatim; `retry_after` non-null means rate limiting.
@@ -723,9 +715,6 @@ mod tests {
         assert_eq!(failure.error.kind, ErrorKind::Request);
         assert_eq!(failure.error.message, "nope");
         assert!(classify_attempt(200, b"{\"type\":\"response.created\"}", false).is_none());
-        assert!(is_stream_ended(
-            &serde_json::from_str(r#"{"status":"stream_ended"}"#).unwrap()
-        ));
     }
 
     #[test]

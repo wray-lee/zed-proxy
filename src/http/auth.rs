@@ -160,6 +160,7 @@ fn bearer_token(value: &str) -> Option<String> {
 
 /// Parse the raw header block (`\r\n` separated) into `(name, value)` pairs.
 /// Values may contain `:` — only the first colon splits (spec 55 §3.3).
+#[cfg(test)]
 pub fn parse_header_lines(block: &str) -> Vec<(String, String)> {
     block
         .split("\r\n")
@@ -354,13 +355,31 @@ mod tests {
         assert!(REFUSAL_MESSAGE.contains("未配置 API key"));
     }
 
-    fn tempdir() -> PathBuf {
+    /// Test data directory removed on drop, so a failed test leaves nothing
+    /// behind either.
+    struct TempDir(PathBuf);
+
+    impl std::ops::Deref for TempDir {
+        type Target = std::path::Path;
+
+        fn deref(&self) -> &Self::Target {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn tempdir() -> TempDir {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let dir =
             std::env::temp_dir().join(format!("zed-proxy-auth-test-{}-{id}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        dir
+        TempDir(dir)
     }
 }

@@ -10,7 +10,6 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use serde_json::Value;
 
-use crate::error::GatewayError;
 use crate::proxy::Services;
 use crate::upstream::UpstreamClient;
 
@@ -29,6 +28,7 @@ const PORTAL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PORTAL_BODY: usize = 1024 * 1024;
 /// Fake-portal override for local verification, the Orb analogue of
 /// `ZED_UPSTREAM_BASE` (spec 75 §1). Never set in production.
+#[cfg(debug_assertions)]
 const PORTAL_BASE_ENV: &str = "ZED_ORB_BASE";
 
 /// Validation verdict for a pasted link (spec 65 §1). The stored value is the
@@ -670,6 +670,7 @@ fn now_unix() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::GatewayError;
     use crate::upstream::client::{BoxFuture, UpstreamRequest, UpstreamResponse, UpstreamStream};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;

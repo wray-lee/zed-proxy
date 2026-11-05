@@ -526,9 +526,9 @@ fn tool_choice_json(choice: &ToolChoice) -> String {
 
 /// `reasoning` object (spec 20 §8.1): `effort` first, then the client's other
 /// keys. `summary:"detailed"` is filled whenever the client chose no summary
-/// policy and the effort is not `none` — the Zig baseline does the same for an
-/// explicit `reasoning_effort` — and only when the model can produce
-/// summaries (spec 25 §4.1, D25-3).
+/// policy and the effort is not `none` — this holds for an explicit
+/// `reasoning_effort` too — and only when the model can produce summaries
+/// (spec 25 §4.1, D25-3).
 fn reasoning_json(
     effort: Option<&str>,
     extra: Option<&Value>,
@@ -1159,8 +1159,8 @@ mod tests {
         req.reasoning.effort = Some("low".to_string());
         req.max_output_tokens = Some(2048);
         // A client that names an effort but no summary policy still gets
-        // `"summary":"detailed"` (spec 20 §8.1, Zig baseline behavior), so the
-        // exact spec sample is not what this request produces.
+        // `"summary":"detailed"` (spec 20 §8.1), so the exact spec sample is
+        // not what this request produces.
         let expected = r#"{"model":"gpt-5.6-sol","stream":true,"input":[{"type":"message","role":"system","content":[{"type":"input_text","text":"Be brief"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]},{"type":"function_call","call_id":"call_1","name":"lookup","arguments":"{\"key\":\"v\"}"},{"type":"function_call_output","call_id":"call_1","output":"done"}],"tools":[{"type":"function","name":"lookup","description":"Look up a key","parameters":{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}}],"tool_choice":"auto","reasoning":{"effort":"low","summary":"detailed"},"max_output_tokens":2048}"#;
         let body = encode(&req, &caps(&["low"]));
         assert_eq!(body, expected);

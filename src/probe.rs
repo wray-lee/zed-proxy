@@ -9,9 +9,7 @@ use serde_json::Value;
 
 use crate::accounts::AccountModelState;
 use crate::catalog::{Catalog, EffortLevel, Provider};
-use crate::client::ClientDecoder;
 use crate::error::GatewayError;
-use crate::provider::ProviderEncoder;
 
 pub const DEFAULT_PROBE_MODEL: &str = "gpt-5.6-luna";
 pub const PROBE_PROMPT: &str = "Reply only OK";
@@ -178,18 +176,7 @@ pub fn probe_plan(catalog: &Catalog, model: &str) -> Result<ProbePlan, GatewayEr
 
 /// Run one probe and write the outcome back to the account (spec 80 §2.3–§2.4).
 /// Failover is deliberately absent: the named account is the one being judged.
-pub async fn run_probe(
-    services: &crate::proxy::Services,
-    account: &str,
-    model: &str,
-) -> Result<Value, GatewayError> {
-    let catalog = services.catalog.snapshot();
-    let plan = probe_plan(&catalog, model)?;
-    run_planned_probe(services, account, &plan, &catalog).await
-}
-
-/// `run_probe` with the plan already resolved (the handler reports the same
-/// plan it ran).
+/// The handler resolves the plan first so the report matches what it ran.
 pub async fn run_planned_probe(
     services: &crate::proxy::Services,
     account: &str,
@@ -200,7 +187,7 @@ pub async fn run_planned_probe(
         return Err(probe_error("account not found"));
     };
     let capabilities = catalog.capabilities(&plan.normalized)?;
-    let provider = capabilities.provider;
+    let provider = plan.provider;
     let body = probe_body(&plan.model, plan.effort.send.as_deref());
     let Ok(body) = serde_json::from_slice::<Value>(&body) else {
         return Err(GatewayError::internal("probe body is not valid JSON"));
@@ -209,6 +196,7 @@ pub async fn run_planned_probe(
         crate::client::decoder_for(crate::client::ClientProtocol::ChatCompletions).decode(&body)?;
     request.provider = provider;
     let encoder = crate::provider::encoder_for(provider);
+    debug_assert_eq!(encoder.kind(), provider);
     let provider_request = encoder.encode_request(&request, &capabilities)?;
 
     let started = std::time::Instant::now();

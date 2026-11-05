@@ -16,7 +16,6 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use futures_util::StreamExt;
-use serde_json::Value;
 
 use crate::accounts::{AccountSnapshot, AccountStore};
 use crate::catalog::{CatalogHandle, ModelCapabilities, Provider};
@@ -447,7 +446,9 @@ pub(crate) async fn account_token(
 }
 
 fn clear_account_token(services: &Services, name: &str) {
-    pool_lock().remove(&token_key(services, name));
+    if let Some(cache) = pool_lock().get_mut(&token_key(services, name)) {
+        cache.clear();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -774,6 +775,7 @@ fn log(message: &str) {
 mod tests {
     use super::*;
     use crate::upstream::client::{BoxFuture, UpstreamResponse, UpstreamStream};
+    use serde_json::Value;
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};

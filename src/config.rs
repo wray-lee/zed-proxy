@@ -27,9 +27,9 @@ impl UpstreamBase {
         let trimmed = raw.trim();
         let without_slash = trimmed.trim_end_matches('/');
         let parsed = url::Url::parse(without_slash)
-            .map_err(|_| ConfigError::InvalidUpstreamBase(trimmed.to_string()))?;
+            .map_err(|_| ConfigError::UpstreamBase(trimmed.to_string()))?;
         if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-            return Err(ConfigError::InvalidUpstreamBase(trimmed.to_string()));
+            return Err(ConfigError::UpstreamBase(trimmed.to_string()));
         }
         Ok(Self {
             prefix: without_slash.to_string(),
@@ -43,27 +43,25 @@ impl UpstreamBase {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigError {
-    InvalidUpstreamBase(String),
-    InvalidBindHost(String),
-    InvalidDataDir(String),
-    Io(String),
+    UpstreamBase(String),
+    BindHost(String),
+    DataDir(String),
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ConfigError::InvalidUpstreamBase(value) => write!(
+            ConfigError::UpstreamBase(value) => write!(
                 f,
                 "ZED_UPSTREAM_BASE must be http(s)://host[:port][/prefix], got {value:?}"
             ),
-            ConfigError::InvalidBindHost(value) => write!(
+            ConfigError::BindHost(value) => write!(
                 f,
                 "ZED_API_HOST must be an IP literal or localhost, got {value:?}"
             ),
-            ConfigError::InvalidDataDir(value) => {
+            ConfigError::DataDir(value) => {
                 write!(f, "cannot use ZED_DATA_DIR {value:?}")
             }
-            ConfigError::Io(value) => write!(f, "{value}"),
         }
     }
 }
@@ -119,9 +117,7 @@ impl ProxyConfig {
 pub struct Config {
     pub host: String,
     pub port: u16,
-    pub login_port: u16,
     pub data_dir: Option<PathBuf>,
-    pub system_id: Option<String>,
     pub upstream: UpstreamBase,
     pub proxy: Option<ProxyConfig>,
 }
@@ -130,17 +126,12 @@ impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let host = host_from_env();
         if !is_bindable_host(&host) {
-            return Err(ConfigError::InvalidBindHost(host));
+            return Err(ConfigError::BindHost(host));
         }
         Ok(Self {
             host,
             port: port_from_env(),
-            // An invalid ZED_LOGIN_PORT is not a startup failure: only the
-            // login endpoint reports it (400, spec 60 §3), so the default is
-            // kept here.
-            login_port: login_port_from_env().unwrap_or(DEFAULT_LOGIN_PORT),
             data_dir: data_dir_from_env(),
-            system_id: non_empty_env("ZED_SYSTEM_ID"),
             upstream: upstream_from_env()?,
             proxy: ProxyConfig::from_env(),
         })
@@ -216,13 +207,6 @@ fn data_dir_from_env() -> Option<PathBuf> {
     }
 }
 
-fn non_empty_env(name: &str) -> Option<String> {
-    match std::env::var(name) {
-        Ok(value) if !value.is_empty() => Some(value),
-        _ => None,
-    }
-}
-
 fn upstream_from_env() -> Result<UpstreamBase, ConfigError> {
     match std::env::var("ZED_UPSTREAM_BASE") {
         Ok(value) if !value.trim().is_empty() => UpstreamBase::parse(&value),
@@ -270,16 +254,10 @@ pub fn prepare_data_dir(dir: Option<&PathBuf>) -> Result<(), ConfigError> {
         return Ok(());
     };
     if let Err(err) = std::fs::create_dir_all(dir) {
-        return Err(ConfigError::InvalidDataDir(format!(
-            "{}: {err}",
-            dir.display()
-        )));
+        return Err(ConfigError::DataDir(format!("{}: {err}", dir.display())));
     }
     if let Err(err) = std::env::set_current_dir(dir) {
-        return Err(ConfigError::InvalidDataDir(format!(
-            "{}: {err}",
-            dir.display()
-        )));
+        return Err(ConfigError::DataDir(format!("{}: {err}", dir.display())));
     }
     Ok(())
 }

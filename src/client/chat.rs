@@ -11,7 +11,7 @@
 
 use serde_json::{Map, Value};
 
-use crate::catalog::{Catalog, Provider};
+use crate::catalog::Catalog;
 use crate::error::GatewayError;
 use crate::neutral::{
     ContentBlock, ImageSource, Message, NeutralRequest, NeutralResponse, Reasoning, Role,

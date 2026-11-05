@@ -101,6 +101,7 @@ impl ModelEntry {
         }
     }
 
+    #[cfg(test)]
     pub fn has_effort_level(&self, value: &str) -> bool {
         let wanted = value.to_ascii_lowercase();
         self.supported_effort_levels
@@ -143,6 +144,7 @@ impl Catalog {
 
     /// Built-in catalog failures (already validated at build time) fall back to
     /// an empty registry rather than aborting a handler.
+    #[cfg(test)]
     pub fn builtin_or_empty() -> Self {
         Self::builtin().unwrap_or_default()
     }
@@ -269,6 +271,7 @@ impl Catalog {
             .map(|position| &self.entries[*position])
     }
 
+    #[cfg(test)]
     pub fn entries(&self) -> &[ModelEntry] {
         &self.entries
     }
@@ -624,6 +627,7 @@ impl CatalogHandle {
             .len()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

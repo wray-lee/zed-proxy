@@ -4,11 +4,6 @@
 //! `healthcheck [--url <url>]`.
 
 #![forbid(unsafe_code)]
-// This crate is the scaffold for the Rust rewrite: every module interface and
-// neutral type is declared up front, so most items have no caller until the
-// follow-up implementation tasks land. Drop these two allowances once the
-// modules are implemented (they are the only reason the lints are quiet).
-#![allow(dead_code, unused_imports)]
 
 mod accounts;
 mod catalog;

@@ -9,19 +9,9 @@ pub enum StopReason {
     ToolCalls,
     /// Refusal / safety stop (`content_filter` / `refusal` / `SAFETY`).
     ContentFilter,
+    /// Upstream stop-sequence hit. Kept for the neutral set (spec 45 §1.2);
+    /// every provider currently folds `stop_sequence` into `Stop`.
+    #[allow(dead_code)]
     StopSequence,
     Unknown,
-}
-
-impl StopReason {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            StopReason::Stop => "stop",
-            StopReason::Length => "length",
-            StopReason::ToolCalls => "tool_calls",
-            StopReason::ContentFilter => "content_filter",
-            StopReason::StopSequence => "stop_sequence",
-            StopReason::Unknown => "unknown",
-        }
-    }
 }

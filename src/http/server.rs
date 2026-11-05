@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Body;
-use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Version};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, Version};
 use axum::Router;
 use futures_util::StreamExt;
 use http_body::Body as _;

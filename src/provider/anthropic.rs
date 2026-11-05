@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use crate::catalog::ModelCapabilities;
 use crate::catalog::Provider as ProviderKind;
-use crate::error::{classify_status, ErrorKind, GatewayError};
+use crate::error::{classify_status, GatewayError};
 use crate::neutral::{
     BlockKind, ContentBlock, ImageSource, Message, NeutralRequest, NeutralResponse, Role,
     StopReason, StreamEvent, ToolChoice, ToolUse, Usage,
@@ -1083,6 +1083,7 @@ pub fn decode_response(body: &[u8]) -> Result<NeutralResponse, GatewayError> {
 mod tests {
     use super::*;
     use crate::catalog::EffortLevel;
+    use crate::error::ErrorKind;
     use crate::neutral::{SystemBlock, ToolDef, ToolResult};
     use serde_json::json;
 

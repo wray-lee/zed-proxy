@@ -91,6 +91,7 @@ impl LoginSlot {
         Self::default()
     }
 
+    #[cfg(test)]
     pub fn status(&self) -> LoginStatus {
         self.status
     }
@@ -145,6 +146,7 @@ impl LoginSlot {
         }
     }
 
+    #[cfg(test)]
     pub fn is_active(&self) -> bool {
         self.active
     }
@@ -243,19 +245,6 @@ impl LoginError {
             LoginError::SaveFailed(_) => 500,
             _ => 400,
         }
-    }
-
-    /// Exact error body: `{"error":"<message>"}`, with the short save error
-    /// appended for `SaveFailed` (spec 70 §3.19).
-    pub fn body(self) -> Vec<u8> {
-        let message = match self {
-            LoginError::SaveFailed(short) => {
-                format!("failed to save account: {short}")
-            }
-            other => other.message().to_string(),
-        };
-        let quoted = serde_json::to_string(&message).unwrap_or_else(|_| "\"\"".to_string());
-        format!("{{\"error\":{quoted}}}").into_bytes()
     }
 
     fn to_gateway(self) -> GatewayError {
@@ -791,7 +780,8 @@ mod tests {
     use super::*;
     use crate::catalog::{Catalog, CatalogHandle};
     use crate::upstream::client::BoxFuture;
-    use crate::upstream::{UpstreamClient, UpstreamRequest, UpstreamResponse, UpstreamStream};
+    use crate::upstream::client::{UpstreamRequest, UpstreamResponse, UpstreamStream};
+    use crate::upstream::UpstreamClient;
     use rsa::pkcs1::DecodeRsaPublicKey;
     use std::path::PathBuf;
 

@@ -17,7 +17,10 @@ pub enum ErrorKind {
     RateLimit,
     /// Network / 5xx / unclassifiable.
     Transient,
-    /// The client went away; neither success nor failure for the account.
+    /// The client went away; neither success nor failure for the account
+    /// (spec 30 §2). The streaming shell cannot observe the drop yet, so
+    /// nothing constructs this.
+    #[allow(dead_code)]
     ClientDisconnect,
 }
 
@@ -113,14 +116,6 @@ impl GatewayError {
         err
     }
 
-    /// Placeholder used by the scaffolded modules that later implementation
-    /// tasks fill in. Never reached by a wired route.
-    pub fn not_implemented(what: &str) -> Self {
-        let mut err = Self::new(ErrorKind::Transient, format!("not implemented: {what}"));
-        err.code = Some("not_implemented");
-        err
-    }
-
     /// Final status returned to the client when every account failed
     /// (spec 30 §3.6).
     pub fn http_status(&self) -> u16 {
@@ -132,13 +127,7 @@ impl GatewayError {
             },
             ErrorKind::Plan => 403,
             ErrorKind::RateLimit => 429,
-            ErrorKind::Transient => {
-                if self.code == Some("not_implemented") {
-                    501
-                } else {
-                    502
-                }
-            }
+            ErrorKind::Transient => 502,
             ErrorKind::ClientDisconnect => 499,
         }
     }

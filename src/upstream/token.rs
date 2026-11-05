@@ -29,6 +29,7 @@ impl TokenCache {
         self.token.as_deref()
     }
 
+    #[cfg(test)]
     pub fn exp(&self) -> i64 {
         self.exp
     }
@@ -43,6 +44,7 @@ impl TokenCache {
 
     /// Store a freshly minted token; `exp` is read from the JWT payload and
     /// defaults to 0 (always stale) when absent.
+    #[cfg(test)]
     pub fn store(&mut self, token: String, now: i64) {
         self.exp = jwt_exp(&token).unwrap_or(0);
         if self.exp <= now {
