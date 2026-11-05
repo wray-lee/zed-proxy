@@ -5,6 +5,81 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog v1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-11-05
+
+The Zig implementation is replaced by a clean-room Rust rewrite. The public
+HTTP contract is preserved; the changes below are the ones a user can notice.
+
+### Added
+
+- `/v1/models` entries now carry `context_length`, `max_output_tokens` and
+  `max_completion_tokens` when the catalogue has them, and the `gpt-5.6` alias
+  copies `gpt-5.6-sol`'s values. The Codex `models[]` list is unchanged.
+- `POST /zed/models/refresh` pulls the catalogue on demand with a 5-second
+  minimum interval and returns `{"refreshed":true,"count":N}`,
+  `{"refreshed":false,"retry_after_s":s,"count":N}` when throttled, or 502
+  when the upstream fails (the old catalogue is kept).
+- `POST /zed/accounts/orb/refresh` force-refreshes the Orb credit balance for
+  one account or all of them, bypassing the 5-minute/60-second cache with a
+  5-second per-account floor, and keeps the last good numbers when the portal
+  fails. Responses use the fixed-decimal `credit` object.
+- Account center button "Refresh balance" and models page button "Refresh model
+  list", both bilingual with loading state, success/failure toasts and no
+  data loss on failure.
+- `zed-proxy healthcheck [--url <url>]` replaces the container's `curl` health
+  check.
+- `ZED_UPSTREAM_BASE` overrides the base URL of the four Zed endpoints (for
+  tests and self-hosting against a mirror).
+- Explicit neutral request/response layer between the three client protocol
+  codecs and the three provider encoders.
+
+### Changed
+
+- Rust 1.99, static musl binaries for `linux/amd64` and `linux/arm64`, with
+  `panic = "abort"`, LTO, `opt-level = "s"` and stripped output.
+- All outbound HTTP, TLS, streaming and the login RSA run in-process; the
+  runtime image contains neither `curl` nor `openssl`.
+- `/v1/responses` can now route to Google models, so every client protocol can
+  reach every provider.
+- Gemini tool schemas are cleaned to the Gemini subset before being sent, and
+  tool calls round-trip in both directions.
+- Error handling is unified across streaming and non-streaming: request-level
+  failures (upstream 400/404/405/413/415/422, including `status.failed`
+  wrappers on HTTP 200) return 400 with the upstream message and are never
+  retried, cooled down, or failed over. Final statuses follow the last error
+  kind (400/401/403/429/502) instead of a generic 502.
+- Anthropic errors use the Anthropic error body on `/v1/messages`; Chat and
+  Responses use the OpenAI shape.
+- Only Linux and containers are supported: the Windows registry proxy lookup,
+  the BCrypt login branch, the Winsock wrappers and the Windows link
+  configuration are gone.
+- `GET /` sends `Cache-Control: no-store`.
+- `configs/claude.settings.json.example` and `accounts.example.json` are
+  removed; the documentation no longer references them.
+- `GET /zed/usage` and `GET /zed/billing` are reserved and answer 501 in this
+  release.
+
+### Fixed
+
+- `POST /zed/accounts/switch` with a non-object body (for example `[]`) no
+  longer crashes the process; it returns 400.
+- An `accounts.json` whose root is an array, or whose `accounts` member is not
+  an object, is read as zero accounts instead of crashing.
+- Account state (cooldown and consecutive failures) is updated atomically, and
+  `accounts.json` writes are atomic (temp file + rename at `0600`).
+- The attempt order has no 64-account limit; every account is tried once.
+- Login no longer writes ciphertext or private key material to disk, and the
+  RSA keypair is generated and used in-process.
+- Streaming no longer drops upstream lines when one network chunk contains
+  several events.
+
+### Removed
+
+- The Zig build (`build.zig`, `build.zig.zon`), the `zig-out` layout and the
+  Zig source tree.
+- The `curl`/`openssl` subprocess paths and the `zed-proxy_req_*.json` /
+  `zed-proxy_stream_*.json` / `zed-proxy_enc_*.bin` temporary files.
+
 ## [0.2.2] - 2026-11-05
 
 ### Fixed

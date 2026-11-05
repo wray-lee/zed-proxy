@@ -6,11 +6,12 @@ ZedProxy 是非官方项目，与 Zed Industries, Inc. 没有关联，也未获�
 
 配置账号后，代理会以你的名义向 Zed 运营的端点发送请求：
 
-- `cloud.zed.dev/completions` 发送 `authorization`、`content-type`、`x-zed-version: 1.8.2`、`x-zed-client-supports-status-messages: true`、`x-zed-client-supports-stream-ended-request-completion-status: true`、`user-agent: Zed/1.8.2 (<os>; <arch>)`。
+- `cloud.zed.dev/completions` 发送 `authorization`、`content-type`、`x-zed-version: 1.8.2`、`x-zed-client-supports-status-messages: true`、`x-zed-client-supports-stream-ended-request-completion-status: true`、`user-agent: Zed/1.8.2 (linux; x86_64)`。
 - `cloud.zed.dev/client/llm_tokens` 发送 `authorization`、`content-type`、`x-zed-system-id`（仅在设置 `ZED_SYSTEM_ID` 时）和相同的 `user-agent`。
 - `cloud.zed.dev/models` 发送 `authorization`、`x-zed-version` 和相同的 `user-agent`。
 - `cloud.zed.dev/client/users/me` 发送 `authorization`、`accept`、`content-type` 和相同的 `user-agent`。
-- 登录会打开 `zed.dev/native_app_signin`（带生成的公钥与回调端口）。本地回调模式下，回调解析完成后浏览器被重定向到 `zed.dev/native_app_signin_succeeded`；粘贴模式则把回调网址粘回给代理。
+- Orb 门户（`portal.withorb.com/api/v1`）会收到[配置](configuration.zh-CN.md)中描述的浏览器仿真头，其中 `Referer` 就是你粘贴的链接。
+- 登录返回 `zed.dev/native_app_signin`（带生成的公钥与回调端口）。本地回调模式下，回调解析完成后浏览器被重定向到 `zed.dev/native_app_signin_succeeded`；粘贴模式则把回调网址粘回给代理。四个上游端点都会遵循 `ZED_UPSTREAM_BASE`（若设置）；`zed.dev` 永远不受它影响。
 
 这些头部与标识的作用是让流量看起来来自官方客户端。账号的套餐、试用状态和风控判定都基于它们。
 

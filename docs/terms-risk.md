@@ -6,11 +6,12 @@ ZedProxy is unofficial. It is not affiliated with, endorsed by, or supported by 
 
 With an account configured, the proxy sends requests to Zed-operated endpoints on your behalf:
 
-- `cloud.zed.dev/completions` carries `authorization`, `content-type`, `x-zed-version: 1.8.2`, `x-zed-client-supports-status-messages: true`, `x-zed-client-supports-stream-ended-request-completion-status: true`, and `user-agent: Zed/1.8.2 (<os>; <arch>)`.
+- `cloud.zed.dev/completions` carries `authorization`, `content-type`, `x-zed-version: 1.8.2`, `x-zed-client-supports-status-messages: true`, `x-zed-client-supports-stream-ended-request-completion-status: true`, and `user-agent: Zed/1.8.2 (linux; x86_64)`.
 - `cloud.zed.dev/client/llm_tokens` carries `authorization`, `content-type`, `x-zed-system-id` (only when `ZED_SYSTEM_ID` is set), and the same `user-agent`.
 - `cloud.zed.dev/models` carries `authorization`, `x-zed-version`, and the same `user-agent`.
 - `cloud.zed.dev/client/users/me` carries `authorization`, `accept`, `content-type`, and the same `user-agent`.
-- Login opens `zed.dev/native_app_signin` with a generated public key and callback port. In local callback mode the browser is then redirected to `zed.dev/native_app_signin_succeeded`; in paste mode the callback URL is pasted back into the proxy instead.
+- The Orb portal (`portal.withorb.com/api/v1`) receives the browser-like headers described in [Configuration](configuration.md), including a `Referer` that is the link you pasted.
+- Login returns `zed.dev/native_app_signin` with a generated public key and callback port. In local callback mode the browser is then redirected to `zed.dev/native_app_signin_succeeded`; in paste mode the callback URL is pasted back into the proxy instead. All four upstream endpoints follow `ZED_UPSTREAM_BASE` when it is set; `zed.dev` never does.
 
 These headers and identifiers exist to make the traffic look like the official client. The account's plan, trial state, and any abuse checks are evaluated against them.
 

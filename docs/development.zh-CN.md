@@ -5,9 +5,24 @@
 贡献规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
 ```sh
-zig build          # 生成 zig-out/bin/zed-proxy
-zig build test     # 运行单元测试
+cd webui && npm ci && npm run build && cd ..   # 二进制会嵌入 webui/dist/index.html
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build --release                           # target/release/zed-proxy
 docker build -t zed-proxy:local .
 ```
 
-需要 Zig 0.15.2 或更新版本。`zig build` 之前必须先在 `webui/` 里执行一次 `npm ci && npm run build`，因为二进制会嵌入 `webui/dist/index.html`。
+需要 Rust 1.99 或更新版本（crate 为 edition 2021，MSRV 1.75）。`cargo build` 之前必须先在 `webui/` 里执行一次 `npm ci && npm run build`，因为 `src/http/static.rs` 用 `include_bytes!` 嵌入 `webui/dist/index.html`，该文件缺失时 `build.rs` 会让构建失败。Web UI 需要 Node.js 22。
+
+仅支持 Linux 与容器。发布构建是静态 musl 二进制：
+
+```sh
+rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+cargo build --release --locked --target x86_64-unknown-linux-musl
+cargo build --release --locked --target aarch64-unknown-linux-musl
+```
+
+Dockerfile 在 QEMU 下为两种架构分别原生构建（`build` 阶段是 `rust:1.99-alpine`，本身即 musl），运行镜像里既没有 `curl` 也没有 `openssl`：健康检查用 `zed-proxy healthcheck`。镜像以 uid 10001 运行，`/data` 权限为 `0700`。
+
+测试放在各模块的 `#[cfg(test)] mod tests` 中，没有 `tests/` 目录。管理页在 `webui/` 下用 `npx tsc --noEmit` 做类型检查、用 `npm run build` 构建。

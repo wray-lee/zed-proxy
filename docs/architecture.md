@@ -2,49 +2,94 @@
 
 # Architecture
 
-This page maps the modules and the two flows that matter: a model request and a login. It does not repeat the endpoint and configuration tables; see [API endpoints](api.md) and [Configuration](configuration.md) for those.
+This page maps the modules and the three flows that matter: a model request, a login, and an Orb balance refresh. It does not repeat the endpoint and configuration tables; see [API endpoints](api.md) and [Configuration](configuration.md) for those.
+
+## Layering
+
+Requests flow in one direction and responses come back the other way:
+
+```
+HTTP entry (router, auth gate, body limits)
+      ↓
+client protocol decoders (Chat / Responses / Anthropic) → NeutralRequest
+      ↓
+provider encoders (open_ai / anthropic / google) → provider request
+      ↓
+upstream client (reqwest, TLS in-process, proxy, timeouts, size caps)
+      ↓
+provider decoders → NeutralResponse / StreamEvent
+      ↓
+client protocol encoders → client JSON / SSE
+```
+
+The neutral layer is the only thing the two halves share. A client protocol decoder never knows which provider will run, and a provider never knows which client format asked. Adding a fourth client format or a fourth provider adds one module and touches no existing encoder: the three providers do not import each other, and neither do the three client codecs.
+
+Provider dispatch reads the `provider` field of the model from Zed's catalogue. Only a name the catalogue does not list falls back to the `claude*` → Anthropic, `gpt-*` → OpenAI, `gemini*` → Google prefix rule, and that rule exists in exactly one place. There is no hardcoded model whitelist.
 
 ## Modules
 
 | File | Role |
 | --- | --- |
-| `src/main.zig` | Entry point. Parses the subcommand (`serve`, `login`, `accounts`), applies `ZED_DATA_DIR`, reads `ZED_API_HOST` and `ZED_API_PORT`, and starts the server. |
-| `src/server.zig` | HTTP server: one thread per connection, request parsing, authentication gate, route table, account and login handlers, model list, embedded web page. |
-| `src/gateway_auth.zig` | Gateway key loading (`ZED_API_KEY`, `ZED_API_KEY_FILE`, `<data>/api_key`), constant-time key comparison, `Authorization` and `x-api-key` parsing, protected path prefixes, loopback detection, and the fail-closed bind policy. |
-| `src/providers.zig` | Request conversion from OpenAI Chat, OpenAI Responses, and Anthropic Messages into Zed's `completions` payload, and response conversion back. Holds the fallback model-name table (a slug Zed lists is forwarded unchanged; only unknown names are rewritten), reasoning effort rules, GPT output budget floors, and the Gemini `thinkingLevel` and `thought` handling. |
-| `src/proxy.zig` | Upstream transport for `cloud.zed.dev/completions`, Zed client header constants (`ZED_VERSION`, user agent, status-message headers, optional `ZED_SYSTEM_ID`), proxy discovery (`HTTPS_PROXY`, `ALL_PROXY`, Windows system proxy), and upstream failure parsing. |
-| `src/zed.zig` | Token minting from `cloud.zed.dev/client/llm_tokens`, model catalog fetch, billing fetch from `client/users/me`, JWT expiry parsing, and the protocol-specific entry points that combine token, conversion, transport, and response conversion. |
-| `src/stream.zig` | Streaming path. Spawns `curl`, parses the upstream event stream, and emits SSE in the client's protocol. Also owns the account failover loop for streams. |
-| `src/accounts.zig` | Account pool: `accounts.json` loading and writing, active account persistence, cooldown state, try order, and failure classification. |
-| `src/account_status.zig` | Credential-free summary of the `client/users/me` billing response. |
-| `src/orb_quota.zig` | Orb portal link validation, token extraction, ledger response parsing and aggregation. Pure functions, no HTTP. |
-| `src/auth.zig` | RSA keypair generation and OAEP-SHA256 decryption, using BCrypt on Windows and the `openssl` CLI elsewhere. Also the local-callback login flow. |
-| `src/zed_login.zig` | Parsing of the pasted callback URL or query string, plus the `SlotState` helper for the single-login slot. Pure functions, no sockets or files. |
-| `src/socket.zig` | Socket read and write wrappers for the Windows and POSIX paths, plus HTTP response writing. |
-| `build.zig` | Builds the `zed-proxy` executable, embeds `webui/dist/index.html`, links Windows system libraries when targeting Windows, and registers every test module behind `zig build test`. |
+| `src/main.rs` | Entry point. Parses the subcommand (`serve`, `login`, `accounts`, `healthcheck`), prints usage, and hands off. |
+| `src/config.rs` | Environment parsing and validation: bind host and port, login port, data directory, upstream base URL, outbound proxy, `ZED_SYSTEM_ID`. Pure helpers so the rules are testable without mutating the process environment. |
+| `src/http/server.rs` | Listener and connection loop. Reads one request head plus its `Content-Length` body, dispatches through the router, and writes the response with an exact `Content-Length` for buffered bodies and close delimiting for streams. `axum::serve` is not used because hyper always chunks unknown-length bodies and always adds `Date`. |
+| `src/http/router.rs` | Route table and handlers, including the entry guard (authentication → 16 MiB limit → `OPTIONS` handling → common CORS/Connection headers). |
+| `src/http/auth.rs` | Gateway key loading (`ZED_API_KEY`, `ZED_API_KEY_FILE`, `<data>/api_key`), SHA-256 constant-time comparison, `Authorization`/`x-api-key` parsing, protected prefixes, loopback detection, fail-closed bind decision and the refusal message. |
+| `src/http/body.rs` | Body cap, JSON object gate, the exact 413/404 error bodies and response constructors. |
+| `src/http/static.rs` | The embedded management page (`webui/dist/index.html` via `include_bytes!`). `build.rs` fails the build when the file is missing. |
+| `src/client/chat.rs`, `responses.rs`, `anthropic.rs` | One decoder and one encoder per client protocol: request JSON → `NeutralRequest`, and `NeutralResponse` / `StreamEvent` → client JSON or SSE. JSON is written by hand because key order is normative. |
+| `src/neutral/` | The shared data types: request, message/content blocks, tools and tool choice, response, stream events, stop reasons and usage. |
+| `src/provider/openai.rs`, `anthropic.rs`, `google.rs` | Per-provider encoding of the neutral request and decoding of upstream events. Each owns its effort rules, output budget and sampling rules, tool dialect and event shapes. `openai.rs` targets the Responses API, `anthropic.rs` the Messages API, `google.rs` `generateContent`. |
+| `src/provider/google_schema.rs` | Cleans a client JSON Schema into the Gemini subset (allowed keys, `nullable` handling, unsupported constructs) and is the only caller of that dialect. |
+| `src/provider/mod.rs` | Factory (`encoder_for`) and the tiny shared envelope helpers. |
+| `src/upstream/client.rs` | The only module that talks to the network: `reqwest` with rustls, four endpoints, timeouts (120 s non-stream, 300 s stream, 15 s meta), size caps (4 MiB / 1 MiB), proxy from `HTTPS_PROXY`/`ALL_PROXY`, `Zed/1.8.2` user agent, and Zed client header constants. Also classifies `status.failed` wrappers and HTTP statuses. |
+| `src/upstream/token.rs` | Per-account LLM token cache and exchange against `client/llm_tokens`, with a 60-second refresh margin; `organization_id` selection from `client/users/me`. |
+| `src/upstream/models.rs`, `jwt.rs` | `/models` pull and catalogue rebuild; JWT payload/`exp` inspection (signature never verified) used for cache expiry. |
+| `src/catalog.rs` | The slug → capability registry. Built from Zed's `/models` response or the embedded `src/models.json`; produces the `/v1/models` payload (OpenAI `data[]` plus Codex `models[]`), knows the `gpt-5.6` alias, the one model-name normalization table and the one-hour list cache with its 5-second refresh window. |
+| `src/accounts/store.rs` | Account pool: tolerant `accounts.json` loading, atomic 0600 writes (temp file + rename), active account persistence, cooldown/attempt state, try order and success/failure bookkeeping. |
+| `src/accounts/status.rs` | Scheduler rows for `/zed/accounts`, the passive token/billing check for `/zed/accounts/status`, and both fixed-shape response bodies. |
+| `src/proxy/mod.rs` | Request orchestration: decode, validate effort, pick the provider, iterate accounts with cooldowns, one 401 token re-mint, error classification, non-streaming attempt loop and the streaming pre-read/commit shell. |
+| `src/proxy/stream.rs` | SSE framing state, line buffering with the 64 KiB cap, empty-stream retry constants and the client-facing stream type. |
+| `src/probe.rs` | The live-check request: fixed body, catalogue-driven effort and budget, one attempt without failover, success test, and write-back of the probe result to the account. |
+| `src/orb.rs` | Orb link validation, token extraction and re-encoding, portal fetch with browser headers, ledger parsing and aggregation, the fixed credit JSON, the 300 s/60 s cache and the forced-refresh rules. |
+| `src/login/mod.rs` | RSA 2048 keypair in-process, PKCS#1 DER public key, authorization URL, callback parsing, OAEP-SHA256 decryption, the single login slot with generations, the paste and local-callback flows and the CLI login. |
+| `src/error.rs` | Error kinds (`request`, `auth`, `plan`, `rate_limit`, `transient`, `client_disconnect`), HTTP status and protocol error bodies. |
 | `webui/` | TypeScript management page, built by Vite into a single HTML file. |
+| `build.rs` | Fails the build when `webui/dist/index.html` is missing, so a blank page can never be shipped silently. |
 
 ## Request flow
 
-1. `server.handleConnection` reads the request line and headers, and parses the body up to 16 MiB. Larger bodies get 413.
-2. If any gateway key is configured and the path starts with `/v1/` or `/zed/`, the request must carry a matching key; otherwise it gets 401 before any route or upstream work.
-3. `route` dispatches on method and path. The three proxy routes first validate the client's `reasoning_effort` for GPT-5.6 models, then branch on the `stream` flag.
-4. Non-streaming: `handleProxy` builds a try order from the account pool, and for each account calls `zed.proxyChatCompletions`, `zed.proxyResponses`, or `zed.proxyMessages`. Each of those mints or reuses an LLM token, converts the body with `providers.buildZedPayload`, posts to `cloud.zed.dev/completions`, and converts the response back. On a failover-worthy error the account is benched and the next one is tried.
-5. Streaming: `stream.handleStreamProxy` runs the same try order, and `doStreamProxy` runs `curl -siN` against the same endpoint, translating each upstream line into SSE for the client protocol. The `stream_ended` marker ends the response and stops the `curl` process.
-6. Upstream failures are classified as auth, rate limit, or transient, which decides the cooldown. A `status.failed` line on an HTTP 200 is treated as a failed request, not a completion.
+1. `serve_connection` reads the request line and headers, and up to 16 MiB of body (larger `Content-Length` is rejected from the header alone). Chunked bodies are not supported.
+2. The entry guard authenticates `/v1/` and `/zed/` requests when at least one key is configured, then applies the 16 MiB limit, answers `OPTIONS`, and adds the common headers.
+3. The router dispatches on method and path. A proxy route first parses the body as a JSON object, then branches on `stream`. For GPT-5.6 models on the two OpenAI routes, `reasoning_effort` is validated before any upstream call; `/v1/messages` is exempt.
+4. `proxy::prepare` decodes the client body into a neutral request, normalizes the model through the catalogue, resolves the provider from the catalogue and picks the encoder.
+5. Non-streaming: `handle_non_stream` builds the attempt order from the account pool and, for each account, mints or reuses an LLM token, encodes the provider request, posts to `completions` and decodes the response. On a failover-worthy error the account is charged and the next one is tried; request-level 400-class failures end the request immediately.
+6. Streaming: `handle_stream` runs the same attempt order but pre-reads the upstream until the first model event, so every failure before the client sees a byte can still be retried (empty 200 streams, up to 2 times) or failed over. After the commit point the response headers are already sent, so later failures become error frames inside the stream.
+7. A `status.failed` object on an HTTP 200 is a failed request, not a completion. A `stream_ended` line closes the upstream stream normally.
+8. Failures are classified as request, auth, plan, rate limit or transient, which decides the cooldown, the retry and the failover (see [Limitations](limitations.md) for what is not verified against the real upstream).
 
 ## Login flow
 
-Two variants share the same keypair and decryption code.
+Both variants generate a fresh keypair and use the same parsing and decryption code.
 
-1. A 2048-bit RSA keypair is generated. The public key is exported as PKCS#1 DER and base64url encoded.
-2. The authorization URL `https://zed.dev/native_app_signin?native_app_port=<port>&native_app_public_key=<key>` is returned or opened.
-3. After sign-in, the browser is redirected to the callback with `user_id` and an encrypted `access_token`.
-4. Paste flow: the user pastes the full URL into the web page or `POST /zed/login/complete`. The server parses the query with `zed_login.parseCallbackPayload`, decodes the base64url ciphertext, and decrypts it with the in-memory private key.
-5. Local callback flow: the server or the CLI listens on a loopback port and reads the same parameters directly from the request line.
-6. `finalizeLogin` writes the credential to `accounts.json` through `accounts.addAccount`, reloads the pool, and makes the new account active.
+1. An RSA 2048-bit keypair (public exponent 65537) is generated in process. The public key is exported as PKCS#1 `RSAPublicKey` DER and base64url encoded without padding.
+2. The authorization URL `https://zed.dev/native_app_signin?native_app_port=<port>&native_app_public_key=<key>` is returned (paste flow) or returned and printed (local flow). Nothing opens a browser; the URL is always in the response or log.
+3. After sign-in, the browser lands on `http://127.0.0.1:<port>/?user_id=…&access_token=…`.
+4. Paste flow: the user pastes the full URL into the page or submits it to `POST /zed/login/complete`. The server drops the fragment, parses the query (`+` and `%XX` decoded, last duplicate wins, `user_id` checked before `access_token`) and decrypts the base64url ciphertext with the in-memory private key using RSA-OAEP-SHA256.
+5. Local callback flow: the server or the CLI listens on a loopback port, reads the same parameters from the request line, and answers `302` to `https://zed.dev/native_app_signin_succeeded`.
+6. The credential is written to `accounts.json` through `AccountStore::add_account` (atomic temp file + rename), the pool is reloaded, and the new account becomes active.
 
-Only one login may be in progress at a time. A paste slot and a legacy slot share a mutex so a concurrent request gets 409. The private key never leaves process memory, and the authorization is valid for 10 minutes.
+Only one login may be in progress at a time; a second start gets 409. The private key never leaves process memory, never reaches a file or a child process, and the authorization is valid for 10 minutes. No `openssl` CLI and no temporary ciphertext file exist.
+
+## Orb refresh flow
+
+`POST /zed/accounts/orb/refresh` picks the target accounts (one named account or every account with a link), and for each one:
+
+1. Checks the 5-second floor since the last real portal request for that account; inside the window it answers from cache with `retry_after_s`.
+2. Fetches `api/v1/customer_from_link`, then `api/v1/customers/<id>/ledger_summary`, both with the browser-like headers, a 10-second timeout and a 1 MiB cap.
+3. Aggregates the credit blocks into the fixed credit object and stores it with a 300-second TTL (60 seconds on failure). A failure keeps the last good numbers for `/zed/accounts/status` while the refresh response reports `credit.ok=false`.
+
+All requests go through the in-process client with proxy settings from the environment; the token and the link never appear in a response, a log or a process argument list.
 
 ## Data files
 
@@ -52,9 +97,10 @@ Everything lives in the data directory (the working directory after `ZED_DATA_DI
 
 | File | Contents |
 | --- | --- |
-| `accounts.json` | Account map: name to `user_id`, the Zed credential JSON, and an optional `orb_url`. Written by login and by `POST /zed/accounts/orb`, read at startup. |
+| `accounts.json` | Account map: name to `user_id`, the Zed credential JSON, and an optional `orb_url`. Written by login and by `POST /zed/accounts/orb`, read at startup; written atomically through a 0600 temp file and rename. |
 | `active_account.txt` | Name of the last active account, so a restart resumes on it instead of the first entry. |
 | `api_key` | Optional gateway key file, used when neither `ZED_API_KEY` nor `ZED_API_KEY_FILE` is set. |
-| `zed-proxy_req_*.json`, `zed-proxy_stream_*.json` | Short-lived request bodies handed to `curl` through `--data-binary @file`. Deleted after the request; the data directory must therefore be writable for proxying to work. |
+| `.write_probe` | Created `0600` and immediately deleted before a login, to prove the directory is writable. |
+| `.accounts.json.tmp`, `.active_account.txt.tmp` | Same-directory temp files used by the atomic writes; removed by the rename. |
 
-Login also needs a writable temp directory for the ciphertext file used by `openssl` (`/tmp`, `/var/tmp`, or `/dev/shm`, first writable one). The private key itself is passed to `openssl` on stdin and is not written to disk.
+The 0.2.2 `zed-proxy_req_*.json`, `zed-proxy_stream_*.json` and `zed-proxy_enc_<pid>_<n>.bin` files are gone: request bodies and ciphertext never touch the disk.

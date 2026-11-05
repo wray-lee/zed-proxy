@@ -20,7 +20,7 @@ Chat Completions 请求用 `reasoning_effort`（或 `reasoning.effort`）传思�
 | `medium` | `MEDIUM` |
 | `high` / `xhigh` / `max` / 未知值 | `HIGH` |
 
-思考内容以 `thought: true` 的 part 返回。非流式响应在 Chat Completions 上放到 `message.thinking` 与 `message.reasoning_content`，在 Anthropic Messages 上放到 `thinking` 块；流式响应在 Chat 上放到 `reasoning_content`，在 Anthropic 上放到 thinking 块。正文在两种情况下都与思考分开。
+思考内容以 `thought: true` 的 part 返回。非流式响应在 Chat Completions 上放到 `message.thinking` 与 `message.reasoning_content`，在 Anthropic Messages 上放到 `thinking` 块；流式响应在 Chat 上放到 `reasoning_content`，在 Anthropic 上放到 thinking 块。正文在两种情况下都与思考分开。在 OpenAI Responses 链路上，它作为 reasoning 输出项返回。
 
 ## Claude Code
 
@@ -30,4 +30,8 @@ export ANTHROPIC_AUTH_TOKEN=<与 ZED_API_KEY 相同的值>
 export ANTHROPIC_MODEL=claude-sonnet-5
 ```
 
-`configs/claude.settings.json.example` 是同样设置的 JSON 形式。`ANTHROPIC_AUTH_TOKEN` 只有在配置了网关 key 时才会被校验；仅监听回环且没有 key 的实例可以填任意非空字符串。
+`ANTHROPIC_AUTH_TOKEN` 只有在配置了网关 key 时才会被校验；仅监听回环且没有 key 的实例可以填任意非空字符串。
+
+## Codex
+
+Base URL 用 `http://127.0.0.1:8001/v1`，API key 用网关 key，模型用 `GET /v1/models` 里的 slug。Codex 走 Responses 链路（`POST /v1/responses`），可到达 OpenAI、Anthropic 与 Google 模型。

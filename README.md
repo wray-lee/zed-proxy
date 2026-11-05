@@ -11,7 +11,7 @@
 [![CI](https://github.com/wray-lee/zed-proxy/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/wray-lee/zed-proxy/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/wray-lee/zed-proxy?sort=semver)](https://github.com/wray-lee/zed-proxy/releases)
 [![Docker image](https://img.shields.io/badge/ghcr.io-wray--lee%2Fzed--proxy-2496ED?logo=docker&logoColor=white)](https://github.com/wray-lee/zed-proxy/pkgs/container/zed-proxy)
-[![Zig](https://img.shields.io/badge/Zig-0.15.2-F7A41D?logo=zig&logoColor=white)](https://ziglang.org)
+[![Rust](https://img.shields.io/badge/Rust-1.99-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 <a href="#quick-start">Quick start</a> · <a href="#documentation">Documentation</a> · <a href="docs/architecture.md">Architecture</a> · <a href="CONTRIBUTING.md">Contributing</a>
@@ -24,24 +24,30 @@
 
 ZedProxy is an HTTP gateway that exposes the models Zed hosts (including `gemini-4-argon`) through the OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages request formats.
 
-Zed's model service expects its own request payloads and a signed-in Zed account. ZedProxy accepts the API shapes that coding clients already speak, converts each request to Zed's format, forwards it to `cloud.zed.dev` with an account credential from its pool, and converts the response back. Clients such as OmniRoute, Codex, and Claude Code can then use Zed-hosted models through their normal OpenAI or Anthropic configuration.
+Zed's model service expects its own request payloads and a signed-in Zed account. ZedProxy accepts the API shapes that coding clients already speak, converts each request to Zed's format with a provider-specific encoder, forwards it to `cloud.zed.dev` with an account credential from its pool, and converts the response back. Clients such as OmniRoute, Codex, and Claude Code can then use Zed-hosted models through their normal OpenAI or Anthropic configuration.
+
+This is the 0.3.0 Rust implementation. It runs as a single static binary: HTTP, TLS, streaming and RSA login all happen in-process, with no `curl` or `openssl` subprocess. Only Linux and containers are supported.
 
 > Unofficial project, not affiliated with or endorsed by Zed Industries. See [Terms and risk](docs/terms-risk.md).
 
 ## Features
 
 - OpenAI Chat Completions (`POST /v1/chat/completions`), streaming and non-streaming.
-- OpenAI Responses (`POST /v1/responses`), streaming and non-streaming. This route does not carry Gemini models.
+- OpenAI Responses (`POST /v1/responses`), streaming and non-streaming.
 - Anthropic Messages (`POST /v1/messages`), streaming and non-streaming.
-- Gemini thinking support: client `reasoning_effort` maps to Gemini `thinkingLevel`, and upstream parts marked `thought: true` are split into thinking output instead of visible text.
-- Account pool with cooldowns and failover. Auth errors, rate limits, and repeated upstream errors bench an account for a period, and the next request is attempted on another account.
-- Web management page served at `/`.
-- Credit balance display: attach an Orb portal link to an account and see used and remaining credit, the reset date and a usage bar in the account center.
+- All three routes can reach all three upstream providers (OpenAI, Anthropic and Google models). Providers are separate modules behind one neutral request/response type, and dispatch follows the provider named in Zed's model catalogue.
+- Gemini support: client `reasoning_effort` maps to Gemini `thinkingLevel`, upstream parts marked `thought: true` are split into thinking output instead of visible text, tool schemas are cleaned to the Gemini subset, and tool calls round-trip in both directions.
+- Account pool with cooldowns and failover. Auth errors, rate limits, and repeated transient upstream errors bench an account for a period, and the next request is attempted on another account.
+- Request-level failures (upstream `400`/`404`/`413`/`415`/`422`, including `status.failed` wrappers) are returned as `400` with the upstream message and are never retried, cooled down, or failed over.
+- Web management page served at `/`, in English and Chinese, with five pages: accounts, models, service check, endpoints and client integration.
+- Credit balance display: attach an Orb portal link to an account and see used and remaining credit, the reset date and a usage bar in the account center, with a "Refresh balance" action.
+- Model catalogue page that lists every model's reasoning levels, with a "Refresh model list" action that pulls from Zed on demand.
 - Selectable live-check model: probe every account with any model from the catalogue, and the account center remembers the choice.
 - Gateway API key authentication with a fail-closed bind rule: a non-loopback bind without any configured key refuses to start.
 - Prebuilt multi-arch image on GHCR, plus compose files for the prebuilt image and for building from source.
-- Paste-callback login for container and remote deployments.
-- `/health` liveness endpoint.
+- Paste-callback login for container and remote deployments, plus a `login` command for hosts.
+- `/health` liveness endpoint and a `healthcheck` subcommand for container orchestration.
+- Rust toolchain: one static musl binary per architecture, with the Web UI embedded at compile time.
 
 ## Web UI
 
@@ -66,15 +72,24 @@ curl http://127.0.0.1:8001/v1/chat/completions   -H "Authorization: Bearer $ZED_
 
 `docker-compose.yml` runs the prebuilt `linux/amd64` and `linux/arm64` image from GHCR. To build from this checkout instead, run `docker compose -f docker-compose.build.yml up -d --build`. Both publish only `127.0.0.1:8001` and keep data in `./data`; on Linux run `chown -R 10001:10001 ./data` first.
 
+To build the binary directly you need Rust 1.99 and Node.js 22 (for the embedded Web UI):
+
+```sh
+cd webui && npm ci && npm run build && cd ..
+cargo build --release          # target/release/zed-proxy
+```
+
+The binary embeds `webui/dist/index.html`, so the Web UI build must run first; `build.rs` fails the build with an explicit message when that file is missing. See [Development](docs/development.md) for `cargo fmt`, `clippy`, `test` and the musl image.
+
 ## Supported protocols
 
 | Client format | Route |
 | --- | --- |
 | OpenAI Chat Completions | `POST /v1/chat/completions` |
-| OpenAI Responses (no Gemini) | `POST /v1/responses` |
+| OpenAI Responses | `POST /v1/responses` |
 | Anthropic Messages | `POST /v1/messages` |
 
-Streaming and non-streaming are supported on all three. Models come from Zed's catalogue, all of them, served as listed (GPT, Claude and Gemini families); the full route list is in [API endpoints](docs/api.md).
+Streaming and non-streaming are supported on all three, and each route can route to every provider. Models come from Zed's catalogue, all of them, served as listed (GPT, Claude and Gemini families); the full route list is in [API endpoints](docs/api.md).
 
 ## Documentation
 
@@ -84,8 +99,8 @@ Streaming and non-streaming are supported on all three. Models come from Zed's c
 | [Login](docs/login.md) | Adding Zed accounts: paste callback, command line, local callback |
 | [Client setup](docs/clients.md) | OmniRoute, Claude Code and other clients |
 | [API endpoints](docs/api.md) | Every route and its gateway-key requirement |
-| [Configuration](docs/configuration.md) | Environment variables and data files |
-| [Architecture](docs/architecture.md) | Modules, request flow, login flow |
+| [Configuration](docs/configuration.md) | Environment variables, command line and data files |
+| [Architecture](docs/architecture.md) | Modules, request flow, login flow, layering |
 | [Known limitations](docs/limitations.md) | What to expect and what is not verified |
 | [Terms and risk](docs/terms-risk.md) | Unofficial status and Zed's Terms of Service |
 | [Development](docs/development.md) | Building and testing from source |

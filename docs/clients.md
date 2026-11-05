@@ -20,7 +20,7 @@ Chat Completions requests carry the thinking level in `reasoning_effort` (or `re
 | `medium` | `MEDIUM` |
 | `high` / `xhigh` / `max` / unknown | `HIGH` |
 
-Thinking content comes back as parts with `thought: true`. Non-streaming responses expose it as `message.thinking` and `message.reasoning_content` on Chat Completions and as a `thinking` block on Anthropic Messages. Streaming responses send it in `reasoning_content` (Chat) or a thinking block (Anthropic). Answer text stays separate in both cases.
+Thinking content comes back as parts with `thought: true`. Non-streaming responses expose it as `message.thinking` and `message.reasoning_content` on Chat Completions and as a `thinking` block on Anthropic Messages. Streaming responses send it in `reasoning_content` (Chat) or a thinking block (Anthropic). Answer text stays separate in both cases. On the OpenAI responses route it comes back as a reasoning output item.
 
 ## Claude Code
 
@@ -30,4 +30,8 @@ export ANTHROPIC_AUTH_TOKEN=<same value as ZED_API_KEY>
 export ANTHROPIC_MODEL=claude-sonnet-5
 ```
 
-`configs/claude.settings.json.example` shows the same settings in JSON form. The value of `ANTHROPIC_AUTH_TOKEN` is only checked when a gateway key is configured; on a loopback-only instance without keys it can be any non-empty string.
+The value of `ANTHROPIC_AUTH_TOKEN` is only checked when a gateway key is configured; on a loopback-only instance without keys it can be any non-empty string.
+
+## Codex
+
+Use `http://127.0.0.1:8001/v1` as the base URL, the gateway key as the API key, and a model slug from `GET /v1/models`. Codex uses the Responses route (`POST /v1/responses`), which reaches OpenAI, Anthropic and Google models.

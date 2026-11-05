@@ -4,9 +4,9 @@
 
 | Version | Supported |
 | --- | --- |
-| 0.1.x | Yes |
+| 0.3.x | Yes |
 
-Only the latest 0.1.x release receives fixes. Older builds have not been
+Only the latest 0.3.x release receives fixes. Older builds have not been
 assessed and are not supported.
 
 ## Reporting a vulnerability
@@ -46,36 +46,27 @@ forwards requests on the user's behalf. It is not a multi-tenant service.
   has the link can read that customer's Orb billing data. It is stored in
   plaintext in `accounts.json`, so the same file rules apply. The gateway
   never returns the link or token in a response and never writes it to a log.
-  Outbound Orb requests are passed to `curl` through `--config -` on stdin
-  precisely so the token does not appear in the process argument list. The
-  Orb balance is fetched from an unofficial portal API that can change without
-  notice.
+  Outbound Orb and upstream requests are made in-process, so the token never
+  appears in a process argument list. The Orb balance is fetched from an
+  unofficial portal API that can change without notice.
 - **No rate limiting or tenant isolation.** There is no quota, throttling or
   per-client separation. Every caller that holds a key shares the same account
   pool and the same upstream quota. Do not expose the gateway to untrusted
   users, and prefer a loopback bind unless a key is configured and the network
   is trusted.
-- **Logging.** The server writes to stderr through `std.debug.print`, and the
-  container runtime collects that stream. It does not print gateway keys,
-  account credentials or Orb links. Upstream error response bodies are logged
-  for diagnosis, so review logs before sharing them.
+- **Logging.** The server writes to stderr with fixed `[zed-proxy] …` prefixes,
+  and the container runtime collects that stream. It does not print gateway
+  keys, account credentials or Orb links.
 - **Request limits.** Request bodies are capped at 16 MiB.
 
 ## Known limitations
 
-- Upstream credentials are passed to `curl` as `-H` arguments (both the
-  streaming and non-streaming paths, and the token/`users/me` requests), so
-  they appear in the process argument list and can be read by other users on
-  the same host. In the container all processes run under a single uid, which
-  makes this harder to reach, but a shared host with untrusted local users
-  widens the exposure. Fixing this needs `--config`/stdin header passing, which
-  is out of scope for this release.
 - `accounts.json` and `active_account.txt` are created with mode `0600` on
   POSIX, and the container data directory is `0700`. Tell clients that a
   bind-mounted host directory keeps whatever mode it already had; run
   `chmod 700 ./data` after `chown`.
-- The login flow writes a short-lived ciphertext to a `0600` temp file in the
-  data directory while `openssl` decrypts it.
+- The login private key and ciphertext stay in process memory; no file or
+  subprocess ever holds them.
 - The Orb credit balance is cached in memory for 5 minutes per account, and a
   failed fetch for 60 seconds. The cache is not persisted, so a restart fetches
   again on the first status request. The portal API is unofficial and can

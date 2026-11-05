@@ -4,28 +4,32 @@ Thanks for taking the time to contribute to ZedProxy.
 
 ## Prerequisites
 
-- Zig 0.15.2 (the version pinned in `build.zig.zon`)
+- Rust 1.99 or newer (edition 2021, MSRV 1.75). Only Linux and containers are supported; there is no Windows or macOS build.
 - Node.js 22 or newer (the Web UI build)
 - Docker, only if you want to build the container image
-- `curl` and `openssl` on Linux, for the login and upstream request paths
+
+No `curl` or `openssl` is needed: upstream requests, TLS and the login RSA work all happen inside the process, and the container health check uses the `healthcheck` subcommand.
 
 ## Local build
 
 The binary embeds `webui/dist/index.html`, so build the Web UI first. A fresh
-clone therefore needs an `npm ci` before `zig build` can succeed.
+clone therefore needs an `npm ci` before `cargo build` can succeed.
 
 ```sh
-cd webui && npm ci && npm run build
-cd ..
-zig build
-zig build test
+cd webui && npm ci && npx tsc --noEmit && npm run build && cd ..
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build                       # target/debug/zed-proxy
+cargo build --release             # target/release/zed-proxy
 docker build -t zed-proxy:local .
 ```
 
-`zig build` writes `zig-out/bin/zed-proxy`. `zig build test` runs the unit
-tests. The Docker build repeats the Web UI and Zig steps inside the image and
-is optional for a code-only change, but the pull request checklist asks you to
-say whether you ran it.
+`cargo fmt --check` must report no diff, `cargo clippy --all-targets -- -D warnings` zero warnings, and `cargo test` must be green. Tests live in each module's `#[cfg(test)] mod tests`; do not add a `tests/` directory. `build.rs` fails the build when `webui/dist/index.html` is missing. The Docker build repeats the Web UI and Rust steps inside the image (building both `linux/amd64` and `linux/arm64` targets) and is optional for a code-only change, but the pull request checklist asks you to say whether you ran it.
+
+## Documentation
+
+Behaviour, endpoints, environment variables and defaults are documented in both languages: `README.md` and `README.zh-CN.md`, plus the matching pages under `docs/` (`api`, `architecture`, `authentication`, `clients`, `configuration`, `development`, `limitations`, `login`, `terms-risk`, each with a `.zh-CN.md` twin). Change one, change its twin in the same commit, and add an entry to `CHANGELOG.md` for user-visible changes. The two versions must stay equivalent; a reviewer will compare them.
 
 ## Commits
 
@@ -37,10 +41,13 @@ say whether you ran it.
   documentation update in the same commit.
 - Set the author to `wray-lee <i@wray7.top>`. Do not add AI attribution
   trailers such as `Co-Authored-By` or `Generated-By`.
+- Push over SSH (`git@github.com:wray-lee/zed-proxy.git`). A change that
+  touches `.github/workflows/*` must be pushed over SSH, because the `gh` CLI
+  token does not carry the `workflow` scope.
 
 ## Pull requests
 
-- Run `zig build test` and report the result. Add a test for new behaviour.
+- Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` and the Web UI checks (`npx tsc --noEmit`, `npm run build`) and report the result. Add a test for new behaviour.
 - Do not commit credentials. `accounts.json`, `.env` files and the `data/`
   directory are ignored; keep them that way, and check logs and test fixtures
   for real tokens or keys before opening the pull request.
