@@ -7,11 +7,20 @@ const CHANGE_EVENT = 'zed-probe-model-change'
 export const DEFAULT_PROBE_MODEL = 'gpt-5.6-luna'
 
 export function getProbeModel(): string {
-  return localStorage.getItem(STORAGE_KEY) || DEFAULT_PROBE_MODEL
+  try {
+    return localStorage.getItem(STORAGE_KEY) || DEFAULT_PROBE_MODEL
+  } catch {
+    // 站点数据被禁用时退回默认模型，功能不受影响。
+    return DEFAULT_PROBE_MODEL
+  }
 }
 
 export function setProbeModel(slug: string): void {
-  localStorage.setItem(STORAGE_KEY, slug)
+  try {
+    localStorage.setItem(STORAGE_KEY, slug)
+  } catch {
+    // 存储被禁用：本次会话仍通过事件生效。
+  }
   window.dispatchEvent(new Event(CHANGE_EVENT))
 }
 
@@ -28,6 +37,12 @@ export function loadCatalog(): Promise<ModelsResponse> {
     throw error
   })
   return catalog
+}
+
+/** 强制刷新后丢弃缓存，让模型页与账号中心都读到新目录。 */
+export function reloadCatalog(): Promise<ModelsResponse> {
+  catalog = undefined
+  return loadCatalog()
 }
 
 /**
@@ -51,7 +66,7 @@ export function resolveProbeModel(models: ModelInfo[]): string {
   const picked = slugs.includes(saved)
     ? saved
     : slugs.includes(DEFAULT_PROBE_MODEL) ? DEFAULT_PROBE_MODEL : slugs[0] ?? DEFAULT_PROBE_MODEL
-  if (picked !== saved) localStorage.setItem(STORAGE_KEY, picked)
+  if (picked !== saved) setProbeModel(picked)
   return picked
 }
 

@@ -189,11 +189,28 @@ async function refreshServiceState() {
   }
 }
 
-renderAccounts()
-renderModels()
-renderHealth()
-renderEndpoints()
-renderIntegration()
+/**
+ * 每个页面单独渲染：一个渲染器抛异常只会让那一页显示错误，不能中断后面的
+ * `render*` 调用——否则该页之后的页面容器保持空 HTML，导航看起来像“页面消失”。
+ */
+function renderPage(name: PageId, render: () => void) {
+  try {
+    render()
+  } catch (error) {
+    console.error(`[webui] failed to render ${name}`, error)
+    const container = document.getElementById(`page-${name}`)
+    if (container) {
+      const message = error instanceof Error ? error.message : String(error)
+      container.innerHTML = `<div class="error-state">${t(`页面渲染失败：${message}`, `Failed to render this page: ${message}`)}</div>`
+    }
+  }
+}
+
+renderPage('accounts', renderAccounts)
+renderPage('models', renderModels)
+renderPage('health', renderHealth)
+renderPage('endpoints', renderEndpoints)
+renderPage('integration', renderIntegration)
 
 const initialPage = location.hash.slice(1)
 activatePage(isPageId(initialPage) ? initialPage : 'accounts', false)

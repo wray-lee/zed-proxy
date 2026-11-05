@@ -77,7 +77,7 @@ requires_openai_auth = false</pre>
           <div><span>${t('兼容客户端', 'Compatible clients')}</span><strong>OpenCode · OpenAI Compatible</strong></div>
         </header>
         <div class="integration-body">
-          <p>${t('完整模型与推理档位见 ', 'See ')}<code>src/models.json</code>${t('，也可以先复制以下最小配置。', ' for the full model and effort-level list, or copy the minimal config below.')}</p>
+          <p>${t('完整模型与推理档位见 ', 'See ')}<code>GET /v1/models</code>${t('，也可以先复制以下最小配置。', ' for the full model and effort-level list, or copy the minimal config below.')}</p>
           <pre class="code-panel" id="config-opencode"><button class="copy-button" data-target="config-opencode" type="button">${icons.copy} ${t('复制配置', 'Copy config')}</button>{
   "$schema": "https://opencode.ai/config.json",
   "model": "zed-local/gpt-5.6-sol",

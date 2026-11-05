@@ -3,6 +3,7 @@ import {
   completeLogin,
   fetchAccounts,
   fetchAccountStatuses,
+  refreshOrbCredit,
   setAccountOrb,
   startLogin,
   switchAccount,
@@ -30,6 +31,7 @@ let models: ModelInfo[] = []
 let lastCheckedAt: number | undefined
 let refreshingAccountData = false
 let checkingAllAccounts = false
+let refreshingOrb = false
 const checkingAccounts = new Set<string>()
 
 function escapeHtml(value: string): string {
@@ -496,6 +498,69 @@ function updateActionButtons() {
       ? `<span class="spinner"></span>${t('正在实测全部账号', 'Testing all accounts')}`
       : `${icons.activity} ${t('全部账号实测', 'Test all accounts')}`
   }
+
+  const orbButton = document.getElementById('refresh-orb-button') as HTMLButtonElement | null
+  if (orbButton) {
+    const hasLink = accounts.some(account => statuses.get(account.name)?.orb_configured)
+    orbButton.disabled = refreshingOrb || !hasLink
+    orbButton.title = hasLink ? '' : t('没有账号关联 Orb 链接', 'No account has an Orb link yet')
+    orbButton.innerHTML = refreshingOrb
+      ? `<span class="spinner"></span>${t('正在获取额度', 'Refreshing balance')}`
+      : `${icons.refresh} ${t('获取最新额度', 'Refresh balance')}`
+  }
+}
+
+/**
+ * 强制重新拉取全部已关联账号的 Orb 余额。失败或限流时保留卡片上的旧数字，
+ * 只更新响应里带回的账号，并用 toast 说明结果。
+ */
+async function refreshOrbBalances() {
+  if (refreshingOrb) return
+  refreshingOrb = true
+  updateActionButtons()
+  try {
+    const result = await refreshOrbCredit()
+    const entries = result.accounts ?? (result.account
+      ? [{ account: result.account, refreshed: result.refreshed, retry_after_s: result.retry_after_s ?? 0, credit: result.credit! }]
+      : [])
+    let updated = 0
+    let failed = 0
+    let retryAfter = 0
+    let failureCode = ''
+    for (const entry of entries) {
+      const status = statuses.get(entry.account)
+      if (!status) continue
+      retryAfter = Math.max(retryAfter, entry.retry_after_s ?? 0)
+      // 只有成功值才写回；credit.ok=false 表示本次没取到新值，卡片保留旧数字，
+      // 由 toast 报错误码（80 §4.4“失败保留旧值”）。
+      if (entry.credit?.ok) {
+        statuses.set(entry.account, { ...status, credit: entry.credit })
+        updated += 1
+      } else {
+        failed += 1
+        failureCode = failureCode || entry.credit?.error || ''
+      }
+    }
+    renderAccountCards()
+    const retryNote = t(`获取过于频繁，${retryAfter} 秒后可再次刷新`, `Refreshed too recently; try again in ${retryAfter}s`)
+    if (entries.length === 0) showToast(t('没有关联 Orb 链接的账号', 'No account has an Orb link'))
+    else if (retryAfter > 0 && updated === 0) showToast(retryNote)
+    else if (failed > 0) {
+      const reason = creditErrorLabel(failureCode)
+      showToast(t(
+        `${failed} 个账号的额度刷新失败（${reason}），已保留原显示${retryAfter > 0 ? `；${retryAfter} 秒后可再次刷新` : ''}`,
+        `Balance refresh failed for ${failed} account(s) (${reason}); the previous values are kept${retryAfter > 0 ? `; try again in ${retryAfter}s` : ''}`,
+      ))
+    } else if (retryAfter > 0) showToast(retryNote)
+    else showToast(t(`已更新 ${updated} 个账号的 Orb 额度`, `Refreshed the Orb balance for ${updated} account(s)`))
+  } catch (error) {
+    // 网络/非 2xx：不清空任何已有余额。
+    const message = error instanceof Error ? error.message : t('未知错误', 'Unknown error')
+    showToast(t(`获取最新额度失败：${message}`, `Failed to refresh the balance: ${message}`))
+  } finally {
+    refreshingOrb = false
+    updateActionButtons()
+  }
 }
 
 async function refreshAccountData(silent = false) {
@@ -592,6 +657,7 @@ export function renderAccounts() {
           <select id="probe-model-select" aria-label="${t('实测模型', 'Test model')}"></select>
         </label>
         <button class="button secondary" id="refresh-accounts-button" type="button">${icons.refresh} ${t('刷新账号数据', 'Refresh account data')}</button>
+        <button class="button secondary" id="refresh-orb-button" type="button">${icons.refresh} ${t('获取最新额度', 'Refresh balance')}</button>
         <button class="button primary" id="check-all-button" type="button">${icons.activity} ${t('全部账号实测', 'Test all accounts')}</button>
       </div>
     </div>
@@ -620,6 +686,7 @@ export function renderAccounts() {
 
   document.getElementById('add-account-button')!.addEventListener('click', () => void startOAuthLogin())
   document.getElementById('refresh-accounts-button')!.addEventListener('click', () => void refreshAccountData())
+  document.getElementById('refresh-orb-button')!.addEventListener('click', () => void refreshOrbBalances())
   document.getElementById('check-all-button')!.addEventListener('click', () => void runHealthCheck())
 
   const select = document.getElementById('probe-model-select') as HTMLSelectElement

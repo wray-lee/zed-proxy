@@ -104,9 +104,20 @@ export interface UsageInfo {
 
 const API_KEY_STORAGE = 'zed_api_key'
 
+/** 站点数据被禁用时只有内存里的 key 可用，至少本次会话还能工作。 */
+let sessionApiKey = ''
+
+function storedApiKey(): string {
+  try {
+    return localStorage.getItem(API_KEY_STORAGE) ?? sessionApiKey
+  } catch {
+    return sessionApiKey
+  }
+}
+
 function withApiKey(init?: RequestInit): RequestInit {
   const headers = new Headers(init?.headers)
-  const key = localStorage.getItem(API_KEY_STORAGE)
+  const key = storedApiKey()
   if (key) headers.set('Authorization', `Bearer ${key}`)
   return { ...init, headers }
 }
@@ -121,7 +132,12 @@ export async function authFetch(input: RequestInfo | URL, init?: RequestInit): P
   if (first.status !== 401) return first
   const entered = prompt(t('请输入网关 API Key', 'Enter the gateway API key'))
   if (entered == null || entered.trim() === '') return first
-  localStorage.setItem(API_KEY_STORAGE, entered.trim())
+  sessionApiKey = entered.trim()
+  try {
+    localStorage.setItem(API_KEY_STORAGE, sessionApiKey)
+  } catch {
+    // 存储被禁用：仅本次会话有效。
+  }
   return globalThis.fetch(input, withApiKey(init))
 }
 
@@ -154,6 +170,61 @@ export async function fetchAccountStatuses(): Promise<AccountStatusesResponse> {
   const r = await authFetch('/zed/accounts/status')
   if (!r.ok) throw new Error(`${r.status}`)
   return r.json()
+}
+
+export interface OrbRefreshEntry {
+  account: string
+  refreshed: boolean
+  retry_after_s: number
+  credit: AccountCredit
+}
+
+export interface OrbRefreshResponse {
+  refreshed: boolean
+  // 单账号请求带这三个；全部账号请求带 accounts。
+  account?: string
+  retry_after_s?: number
+  credit?: AccountCredit
+  accounts?: OrbRefreshEntry[]
+}
+
+/** 绕过 300/60 秒缓存重新拉取 Orb 余额；省略 account 表示全部已关联账号。 */
+export async function refreshOrbCredit(account?: string): Promise<OrbRefreshResponse> {
+  const r = await authFetch('/zed/accounts/orb/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(account ? { account } : {}),
+  })
+  if (!r.ok) throw new Error(await errorCode(r))
+  return r.json()
+}
+
+export interface ModelsRefreshResponse {
+  refreshed: boolean
+  count?: number
+  retry_after_s?: number
+}
+
+/** 强制重新拉取上游模型目录；502 表示上游失败，调用方保留旧列表。 */
+export async function refreshModels(): Promise<ModelsRefreshResponse> {
+  const r = await authFetch('/zed/models/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  })
+  if (!r.ok) throw new Error(await errorCode(r))
+  return r.json()
+}
+
+/** 错误体里的 error 字段比状态码更能说明原因；没有就退回状态码。 */
+async function errorCode(r: Response): Promise<string> {
+  try {
+    const data = await r.json()
+    if (typeof data?.error === 'string' && data.error) return data.error
+  } catch {
+    // 非 JSON 错误体只报状态码。
+  }
+  return `${r.status}`
 }
 
 /**

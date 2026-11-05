@@ -1,8 +1,8 @@
 import { t } from '../i18n'
 import { icons } from '../icons'
-import { catalogModels, getProbeModel, loadCatalog, onProbeModelChange, resolveProbeModel, setProbeModel } from '../probeModel'
+import { catalogModels, getProbeModel, loadCatalog, onProbeModelChange, reloadCatalog, resolveProbeModel, setProbeModel } from '../probeModel'
 import { showToast } from '../toast'
-import type { ModelInfo } from '../api'
+import { refreshModels, type ModelInfo } from '../api'
 
 const VENDORS: Record<string, string> = {
   open_ai: 'OpenAI',
@@ -72,17 +72,50 @@ function renderRows() {
   })
 }
 
-async function loadModelPage() {
+async function loadModelPage(loader = loadCatalog) {
   const list = document.getElementById('model-list')!
   try {
-    const data = await loadCatalog()
+    const data = await loader()
     vendors = new Map((data.data ?? []).map(entry => [entry.id, entry.owned_by ?? '']))
     models = catalogModels(data)
     resolveProbeModel(models)
     renderRows()
+    updateModelCount((data.data ?? []).length)
   } catch (error) {
     const message = escapeHtml(error instanceof Error ? error.message : t('未知错误', 'Unknown error'))
     list.innerHTML = `<div class="error-state">${t(`模型列表加载失败：${message}`, `Failed to load the model list: ${message}`)}</div>`
+  }
+}
+
+/** 侧栏的“N 个模型”跟着刷新结果走，不必等下一次可见性检查。 */
+function updateModelCount(count: number) {
+  const label = document.getElementById('model-count')
+  if (label) label.textContent = t(`${count} 个模型`, `${count} ${count === 1 ? 'model' : 'models'}`)
+}
+
+async function refreshModelList(button: HTMLButtonElement) {
+  if (button.disabled) return
+  button.disabled = true
+  const idle = `${icons.refresh} ${t('获取最新模型列表', 'Refresh model list')}`
+  button.innerHTML = `<span class="spinner"></span>${t('正在刷新', 'Refreshing')}`
+  try {
+    const result = await refreshModels()
+    if (result.refreshed) {
+      await loadModelPage(reloadCatalog)
+      showToast(t(`已更新 ${result.count ?? 0} 个模型`, `Updated ${result.count ?? 0} models`))
+    } else if (result.retry_after_s) {
+      showToast(t(`操作太频繁，${result.retry_after_s} 秒后可再次刷新`, `Too many requests; try again in ${result.retry_after_s}s`))
+    } else {
+      // 无账号时后端返回内置目录，列表本身没变。
+      showToast(t(`没有可用账号，继续使用内置目录（${result.count ?? 0} 个模型）`, `No accounts available; still using the built-in catalog (${result.count ?? 0} models)`))
+    }
+  } catch (error) {
+    // 失败时保留旧列表，只提示错误码。
+    const message = error instanceof Error ? error.message : t('未知错误', 'Unknown error')
+    showToast(t(`模型刷新失败：${message}`, `Failed to refresh models: ${message}`))
+  } finally {
+    button.disabled = false
+    button.innerHTML = idle
   }
 }
 
@@ -95,6 +128,9 @@ export function renderModels() {
         <h1>${t('模型', 'Models')}</h1>
         <p>${t('查看网关转发的全部模型及其推理档位。这里的选用只影响账号中心的实测请求，不会改变客户端可用的模型。', 'Review every model the gateway proxies and its reasoning levels. The selection here only changes live-check requests in Account center; it does not restrict the models clients can use.')}</p>
       </div>
+      <div class="heading-actions">
+        <button class="button secondary" id="refresh-models-button" type="button">${icons.refresh} ${t('获取最新模型列表', 'Refresh model list')}</button>
+      </div>
     </div>
 
     <div class="notice-banner neutral">
@@ -106,6 +142,9 @@ export function renderModels() {
       <div class="loading-panel"><span class="spinner"></span>${t('正在加载模型', 'Loading models')}</div>
     </div>
   `
+
+  const refreshButton = document.getElementById('refresh-models-button') as HTMLButtonElement
+  refreshButton.addEventListener('click', () => void refreshModelList(refreshButton))
 
   onProbeModelChange(() => renderRows())
   void loadModelPage()
