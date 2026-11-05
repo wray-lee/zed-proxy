@@ -34,6 +34,9 @@ pub enum StreamEvent {
         index: u64,
         id: String,
         name: String,
+        /// Upstream item was a Responses `custom_tool_call` (spec 42 §3.2
+        /// item 5); arg deltas then carry the free-form input text.
+        custom: bool,
     },
     ToolArgsDelta {
         index: u64,

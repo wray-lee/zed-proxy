@@ -52,6 +52,11 @@ pub struct ToolUse {
     /// Opaque per-provider token that must be echoed back with the call
     /// (Gemini `thoughtSignature`, spec 22 §5.3.3).
     pub signature: Option<String>,
+    /// The upstream reported this call as a Responses `custom_tool_call`
+    /// (free-form tool). `arguments` then holds the raw free-form input text
+    /// (not JSON); the Responses client encoder emits the `custom_tool_call`
+    /// item shape from it.
+    pub custom: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

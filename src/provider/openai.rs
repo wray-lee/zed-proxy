@@ -344,13 +344,30 @@ fn image_part(source: &ImageSource, supports_images: bool) -> Option<String> {
     })
 }
 
-fn function_call_item(tool: &ToolUse) -> Option<String> {
+fn function_call_item(tool: &ToolUse, native: bool) -> Option<String> {
     if tool.id.is_empty() || tool.name.is_empty() {
         eprintln!(
             "[zed-proxy] open_ai: dropping tool call without id or name (name {:?}, id {:?})",
             tool.name, tool.id
         );
         return None;
+    }
+    // Only the native shape declares `custom` tools (spec 20 §5); the synthetic
+    // shape declares them as function tools and must keep `function_call`.
+    if tool.custom && native {
+        // `{"input":…}` back to the free-form string the upstream declared
+        // (spec 42 §1.2 is the inverse mapping).
+        let parsed: Value = serde_json::from_str(&tool.arguments).unwrap_or(Value::Null);
+        let input = match parsed.get("input").and_then(Value::as_str) {
+            Some(input) => input.to_string(),
+            None => tool.arguments.clone(),
+        };
+        return Some(format!(
+            "{{\"type\":\"custom_tool_call\",\"call_id\":{},\"name\":{},\"input\":{}}}",
+            json_str(&tool.id),
+            json_str(&tool.name),
+            json_str(&input)
+        ));
     }
     let arguments = if tool.arguments.trim().is_empty() {
         DEFAULT_ARGUMENTS
@@ -363,6 +380,13 @@ fn function_call_item(tool: &ToolUse) -> Option<String> {
         json_str(&tool.name),
         json_str(arguments)
     ))
+}
+
+/// Neutral `arguments` for a custom (free-form) call: the input wrapped as
+/// `{"input":"…"}`, the same shape the Responses request decoder produces
+/// (spec 42 §1.2), so every client protocol can read it as JSON text.
+fn custom_call_arguments(input: &str) -> String {
+    format!("{{\"input\":{}}}", json_str(input))
 }
 
 fn function_call_output_item(result: &ToolResult) -> Option<String> {
@@ -439,7 +463,7 @@ fn input_items(request: &NeutralRequest, native: bool, supports_images: bool) ->
         }
         for block in &message.parts {
             match block {
-                ContentBlock::ToolUse(tool) => items.extend(function_call_item(tool)),
+                ContentBlock::ToolUse(tool) => items.extend(function_call_item(tool, native)),
                 ContentBlock::ToolResult(result) => items.extend(function_call_output_item(result)),
                 ContentBlock::Opaque(opaque) => {
                     let ours = opaque.provider == "open_ai" || opaque.provider == "openai";
@@ -651,10 +675,12 @@ impl ResponsesDecoder {
             "response.output_item.added" => {
                 self.saw_event = true;
                 let item = event.get("item").unwrap_or(&Value::Null);
-                if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                let kind = item.get("type").and_then(Value::as_str);
+                if matches!(kind, Some("function_call") | Some("custom_tool_call")) {
                     // At most one tool block is open at a time (spec 45 §1.2);
                     // a well-formed stream closes it with `done` first.
                     events.extend(self.close_tool());
+                    let custom = kind == Some("custom_tool_call");
                     let id = item
                         .get("call_id")
                         .and_then(Value::as_str)
@@ -673,15 +699,39 @@ impl ResponsesDecoder {
                         name: name.clone(),
                         arguments: String::new(),
                         signature: None,
+                        custom,
                     });
                     self.open_tool = Some(index as usize);
-                    events.push(StreamEvent::ToolStart { index, id, name });
+                    events.push(StreamEvent::ToolStart {
+                        index,
+                        id,
+                        name,
+                        custom,
+                    });
                 }
             }
             "response.output_item.done" => {
+                // A custom call may carry its whole `input` only on the closing
+                // item (no `.delta`/`.done` events); take it before closing.
+                if let Some(index) = self.open_tool {
+                    if self.tools[index].custom && self.tools[index].arguments.is_empty() {
+                        if let Some(input) = event
+                            .get("item")
+                            .and_then(|item| item.get("input"))
+                            .and_then(Value::as_str)
+                            .filter(|input| !input.is_empty())
+                        {
+                            self.tools[index].arguments = input.to_string();
+                            events.push(StreamEvent::ToolArgsDelta {
+                                index: index as u64,
+                                delta: input.to_string(),
+                            });
+                        }
+                    }
+                }
                 events.extend(self.close_tool());
             }
-            "response.function_call_arguments.delta" => {
+            "response.function_call_arguments.delta" | "response.custom_tool_call_input.delta" => {
                 let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
                 if !delta.is_empty() {
                     if let Some(index) = self.open_tool {
@@ -694,6 +744,26 @@ impl ResponsesDecoder {
                 }
             }
             "response.function_call_arguments.done" => {
+                events.extend(self.close_tool());
+            }
+            "response.custom_tool_call_input.done" => {
+                // `.done` repeats the whole free-form input; it is authoritative
+                // when the upstream skipped the deltas.
+                if let Some(index) = self.open_tool {
+                    if let Some(input) = event
+                        .get("input")
+                        .and_then(Value::as_str)
+                        .filter(|input| !input.is_empty())
+                    {
+                        if self.tools[index].arguments.is_empty() {
+                            events.push(StreamEvent::ToolArgsDelta {
+                                index: index as u64,
+                                delta: input.to_string(),
+                            });
+                        }
+                        self.tools[index].arguments = input.to_string();
+                    }
+                }
                 events.extend(self.close_tool());
             }
             "response.output_text.delta" => {
@@ -749,7 +819,12 @@ impl ResponsesDecoder {
 
     fn close_tool(&mut self) -> Option<StreamEvent> {
         let index = self.open_tool.take()?;
-        if self.tools[index].arguments.is_empty() {
+        if self.tools[index].custom {
+            // Same neutral shape the request decoder produces: the free-form
+            // input wrapped as `{"input":"…"}` (spec 42 §1.2).
+            let input = std::mem::take(&mut self.tools[index].arguments);
+            self.tools[index].arguments = custom_call_arguments(&input);
+        } else if self.tools[index].arguments.is_empty() {
             self.tools[index].arguments = DEFAULT_ARGUMENTS.to_string();
         }
         Some(StreamEvent::ToolEnd {
@@ -821,6 +896,35 @@ impl ResponsesDecoder {
                         name,
                         arguments,
                         signature: None,
+                        custom: false,
+                    });
+                }
+                Some("custom_tool_call") => {
+                    let id = item
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .or_else(|| item.get("id").and_then(Value::as_str))
+                        .unwrap_or_default()
+                        .to_string();
+                    let name = item
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let input = match item.get("input") {
+                        Some(Value::String(text)) => text.clone(),
+                        // The spec types `input` as a string; serialise anything
+                        // else rather than dropping the call.
+                        Some(other) => json_value(other),
+                        None => String::new(),
+                    };
+                    envelope_tools.push(ToolUse {
+                        id,
+                        name,
+                        arguments: custom_call_arguments(&input),
+                        signature: None,
+                        custom: true,
                     });
                 }
                 _ => {}
@@ -1136,6 +1240,7 @@ mod tests {
                     name: "lookup".to_string(),
                     arguments: "{\"key\":\"v\"}".to_string(),
                     signature: None,
+                    custom: false,
                 })],
             },
             Message {
@@ -1225,12 +1330,14 @@ mod tests {
                     name: "lookup".to_string(),
                     arguments: "{}".to_string(),
                     signature: None,
+                    custom: false,
                 }),
                 ContentBlock::ToolUse(ToolUse {
                     id: "call_2".to_string(),
                     name: "lookup".to_string(),
                     arguments: String::new(),
                     signature: None,
+                    custom: false,
                 }),
             ],
         }];
@@ -1466,7 +1573,8 @@ mod tests {
                 StreamEvent::ToolStart {
                     index: 0,
                     id: "call_9".to_string(),
-                    name: "lookup".to_string()
+                    name: "lookup".to_string(),
+                    custom: false,
                 },
                 StreamEvent::ToolArgsDelta {
                     index: 0,
@@ -1499,6 +1607,79 @@ mod tests {
         let body = br#"{"event":{"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"content_filter"}}}}"#;
         let response = OpenAiProvider.decode_response(body).unwrap();
         assert_eq!(response.stop_reason, StopReason::ContentFilter);
+    }
+
+    #[test]
+    fn non_streaming_custom_tool_call_is_kept() {
+        // The upstream declares the tool as `custom` and answers with a
+        // `custom_tool_call` item; dropping it made Codex see `output:[]`.
+        let body = br#"{"event":{"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7},"output":[{"id":"ctc_call_1","type":"custom_tool_call","status":"completed","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}]}}}"#;
+        let response = OpenAiProvider.decode_response(body).unwrap();
+        assert_eq!(response.stop_reason, StopReason::ToolCalls);
+        assert_eq!(response.tool_calls.len(), 1);
+        assert_eq!(response.tool_calls[0].id, "call_1");
+        assert_eq!(response.tool_calls[0].name, "apply_patch");
+        assert!(response.tool_calls[0].custom);
+        assert_eq!(
+            response.tool_calls[0].arguments,
+            r#"{"input":"*** Begin Patch"}"#
+        );
+    }
+
+    #[test]
+    fn streaming_custom_tool_call_events_keep_the_call() {
+        let lines = [
+            r#"{"event":{"type":"response.output_item.added","item":{"id":"ctc_call_1","type":"custom_tool_call","status":"in_progress","call_id":"call_1","name":"apply_patch","input":""}}}"#,
+            r#"{"event":{"type":"response.custom_tool_call_input.delta","delta":"*** Begin"}}"#,
+            r#"{"event":{"type":"response.custom_tool_call_input.delta","delta":" Patch"}}"#,
+            r#"{"event":{"type":"response.custom_tool_call_input.done","input":"*** Begin Patch"}}"#,
+            r#"{"event":{"type":"response.output_item.done","item":{"id":"ctc_call_1","type":"custom_tool_call","status":"completed","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}}}"#,
+            r#"{"event":{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7},"output":[{"id":"ctc_call_1","type":"custom_tool_call","status":"completed","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}]}}}"#,
+            r#"{"status":"stream_ended"}"#,
+        ];
+        let mut decoder = ResponsesDecoder::default();
+        let mut events = Vec::new();
+        for line in lines {
+            events.extend(decoder.push_line(line).unwrap());
+        }
+        assert_eq!(
+            events[0],
+            StreamEvent::ToolStart {
+                index: 0,
+                id: "call_1".to_string(),
+                name: "apply_patch".to_string(),
+                custom: true,
+            }
+        );
+        assert_eq!(
+            events[1],
+            StreamEvent::ToolArgsDelta {
+                index: 0,
+                delta: "*** Begin".to_string()
+            }
+        );
+        assert_eq!(
+            events[2],
+            StreamEvent::ToolArgsDelta {
+                index: 0,
+                delta: " Patch".to_string()
+            }
+        );
+        assert_eq!(events[3], StreamEvent::ToolEnd { index: 0 });
+        assert_eq!(
+            events.last(),
+            Some(&StreamEvent::End {
+                reason: StopReason::ToolCalls
+            })
+        );
+        let response = decoder.into_response().unwrap();
+        assert_eq!(response.tool_calls.len(), 1);
+        assert!(response.tool_calls[0].custom);
+        assert_eq!(response.tool_calls[0].name, "apply_patch");
+        assert_eq!(
+            response.tool_calls[0].arguments,
+            r#"{"input":"*** Begin Patch"}"#
+        );
     }
 
     #[test]
@@ -1609,6 +1790,34 @@ mod tests {
         let body = encode(&req, &caps_std());
         assert!(body.contains(
             r#"{"type":"custom","name":"shell","description":"Run","format":{"type":"text"}}"#
+        ));
+    }
+
+    #[test]
+    fn custom_tool_history_round_trips_only_in_native_shape() {
+        let call = ToolUse {
+            id: "call_1".to_string(),
+            name: "apply_patch".to_string(),
+            arguments: r#"{"input":"*** Begin Patch"}"#.to_string(),
+            signature: None,
+            custom: true,
+        };
+        let mut req = request("gpt-5.3-codex");
+        req.passthrough = vec![("store".to_string(), Value::Bool(true))];
+        req.messages = vec![Message {
+            role: Role::Assistant,
+            parts: vec![ContentBlock::ToolUse(call.clone())],
+        }];
+        let body = encode(&req, &caps_std());
+        assert!(body.contains(
+            r#"{"type":"custom_tool_call","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}"#
+        ));
+        // The synthetic shape declares function tools, so it keeps
+        // `function_call` with the wrapped input as arguments.
+        req.passthrough.clear();
+        let body = encode(&req, &caps_std());
+        assert!(body.contains(
+            r#"{"type":"function_call","call_id":"call_1","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}"}"#
         ));
     }
 }

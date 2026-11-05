@@ -628,6 +628,7 @@ fn tool_from_call(call: &Value, part: &Value) -> Option<ToolUse> {
         name,
         arguments: arguments.to_string(),
         signature,
+        custom: false,
     })
 }
 
@@ -741,6 +742,7 @@ impl StreamDecoder for GoogleStreamDecoder {
                     index,
                     id: tool.id,
                     name: tool.name,
+                    custom: false,
                 });
                 events.push(StreamEvent::ToolArgsDelta {
                     index,
@@ -837,6 +839,7 @@ mod tests {
             name: name.to_string(),
             arguments: arguments.to_string(),
             signature: None,
+            custom: false,
         })
     }
 
@@ -1646,9 +1649,9 @@ mod tests {
         let tool_start = events
             .iter()
             .find_map(|event| match event {
-                StreamEvent::ToolStart { index, id, name } => {
-                    Some((*index, id.clone(), name.clone()))
-                }
+                StreamEvent::ToolStart {
+                    index, id, name, ..
+                } => Some((*index, id.clone(), name.clone())),
                 _ => None,
             })
             .expect("tool start");

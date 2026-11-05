@@ -265,6 +265,8 @@ fn decode_call(object: &Map<String, Value>, custom: bool) -> Option<ToolUse> {
         name: name.to_string(),
         arguments,
         signature: None,
+        // Keep the free-form shape on the way back to the upstream.
+        custom,
     })
 }
 
@@ -709,6 +711,27 @@ fn function_call_item(item_id: &str, call_id: &str, name: &str, arguments: &str)
     )
 }
 
+fn custom_tool_call_item(item_id: &str, call_id: &str, name: &str, input: &str) -> String {
+    format!(
+        "{{\"id\":{},\"type\":\"custom_tool_call\",\"status\":\"completed\",\"call_id\":{},\"name\":{},\"input\":{}}}",
+        jstr(item_id),
+        jstr(call_id),
+        jstr(name),
+        jstr(input)
+    )
+}
+
+/// Free-form input of a custom call: the neutral `arguments` wraps it as
+/// `{"input":"…"}` when it came from a client request (spec 42 §1.2) and holds
+/// the raw text when it came from the upstream; accept both.
+fn custom_input(arguments: &str) -> String {
+    let parsed: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
+    match parsed.get("input").and_then(Value::as_str) {
+        Some(input) => input.to_string(),
+        None => arguments.to_string(),
+    }
+}
+
 /// `output[]` in production order (spec 42 §2.2); empty when nothing was
 /// produced.
 fn output_items(response: &NeutralResponse) -> Vec<String> {
@@ -721,12 +744,21 @@ fn output_items(response: &NeutralResponse) -> Vec<String> {
         items.push(message_item(index, &response.text));
     }
     for call in &response.tool_calls {
-        items.push(function_call_item(
-            &format!("fc_{}", call.id),
-            &call.id,
-            &call.name,
-            &call.arguments,
-        ));
+        if call.custom {
+            items.push(custom_tool_call_item(
+                &format!("ctc_{}", call.id),
+                &call.id,
+                &call.name,
+                &custom_input(&call.arguments),
+            ));
+        } else {
+            items.push(function_call_item(
+                &format!("fc_{}", call.id),
+                &call.id,
+                &call.name,
+                &call.arguments,
+            ));
+        }
     }
     items
 }
@@ -805,9 +837,11 @@ impl ClientEncoder for ResponsesEncoder {
                     ),
                 ));
             }
-            StreamEvent::ToolStart { id, name, .. } => {
+            StreamEvent::ToolStart {
+                id, name, custom, ..
+            } => {
                 ensure_started(state, &mut out);
-                open_tool(state, &mut out, id, name);
+                open_tool(state, &mut out, id, name, *custom);
                 state.tool_count += 1;
             }
             StreamEvent::ToolArgsDelta { delta, .. } => {
@@ -815,11 +849,16 @@ impl ClientEncoder for ResponsesEncoder {
                     state.text.push_str(delta);
                     let index = state.next_block_index.saturating_sub(1);
                     let item_id = tool_item_id(state, index);
+                    let event = if tool_is_custom(state, index) {
+                        "response.custom_tool_call_input.delta"
+                    } else {
+                        "response.function_call_arguments.delta"
+                    };
                     out.extend(event_frame(
                         state,
-                        "response.function_call_arguments.delta",
+                        event,
                         format!(
-                            "{{\"type\":\"response.function_call_arguments.delta\",\"item_id\":{},\"output_index\":{index},\"delta\":{}}}",
+                            "{{\"type\":\"{event}\",\"item_id\":{},\"output_index\":{index},\"delta\":{}}}",
                             jstr(&item_id),
                             jstr(delta)
                         ),
@@ -1025,6 +1064,7 @@ fn close_reasoning(state: &mut SseState, out: &mut Vec<u8>) {
 }
 
 /// The tool item id for the open/closed tool at `index` (`fc_<call id>`).
+/// While the tool is open, `tool_arguments[index]` still holds its metadata.
 fn tool_item_id(state: &SseState, index: u64) -> String {
     let Some(meta) = state.tool_arguments.get(index as usize) else {
         return String::new();
@@ -1037,29 +1077,53 @@ fn tool_item_id(state: &SseState, index: u64) -> String {
         .to_string()
 }
 
-fn open_tool(state: &mut SseState, out: &mut Vec<u8>, id: &str, name: &str) {
+/// True when the open tool at `index` is a custom (free-form) call; the
+/// upstream marks it in the metadata `open_tool` stored there (spec 42 §3.2).
+fn tool_is_custom(state: &SseState, index: u64) -> bool {
+    state
+        .tool_arguments
+        .get(index as usize)
+        .and_then(|meta| serde_json::from_str::<Value>(meta).ok())
+        .and_then(|parsed| parsed.get("custom").and_then(Value::as_bool))
+        .unwrap_or(false)
+}
+
+fn open_tool(state: &mut SseState, out: &mut Vec<u8>, id: &str, name: &str, custom: bool) {
     close_item(state, out);
     let index = state.next_block_index;
     state.next_block_index += 1;
     state.open_block = Some(ITEM_TOOL);
     state.text.clear();
     let call_id = tool_call_id(if id.is_empty() { None } else { Some(id) });
-    let item_id = format!("fc_{call_id}");
+    let prefix = if custom { "ctc_" } else { "fc_" };
+    let item_id = format!("{prefix}{call_id}");
     let meta = format!(
-        "{{\"item_id\":{},\"name\":{},\"call_id\":{}}}",
+        "{{\"item_id\":{},\"name\":{},\"call_id\":{},\"custom\":{custom}}}",
         jstr(&item_id),
         jstr(name),
         jstr(&call_id)
     );
     state.tool_arguments.push(meta);
+    let item = if custom {
+        format!(
+            "{{\"id\":{},\"type\":\"custom_tool_call\",\"status\":\"in_progress\",\"call_id\":{},\"name\":{},\"input\":\"\"}}",
+            jstr(&item_id),
+            jstr(&call_id),
+            jstr(name)
+        )
+    } else {
+        format!(
+            "{{\"id\":{},\"type\":\"function_call\",\"status\":\"in_progress\",\"call_id\":{},\"name\":{},\"arguments\":\"\"}}",
+            jstr(&item_id),
+            jstr(&call_id),
+            jstr(name)
+        )
+    };
     out.extend(event_frame(
         state,
         "response.output_item.added",
         format!(
-            "{{\"type\":\"response.output_item.added\",\"output_index\":{index},\"item\":{{\"id\":{},\"type\":\"function_call\",\"status\":\"in_progress\",\"call_id\":{},\"name\":{},\"arguments\":\"\"}}}}",
-            jstr(&item_id),
-            jstr(&call_id),
-            jstr(name)
+            "{{\"type\":\"response.output_item.added\",\"output_index\":{index},\"item\":{item}}}"
         ),
     ));
 }
@@ -1086,8 +1150,12 @@ fn close_tool(state: &mut SseState, out: &mut Vec<u8>) {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
+    let custom = parsed
+        .get("custom")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let mut arguments = std::mem::take(&mut state.text);
-    if arguments.is_empty() {
+    if arguments.is_empty() && !custom {
         // A tool called without arguments must still carry parseable JSON
         // (spec 45 §4.4).
         arguments = "{}".to_string();
@@ -1099,6 +1167,29 @@ fn close_tool(state: &mut SseState, out: &mut Vec<u8>) {
                 jstr(&item_id)
             ),
         ));
+    }
+    if custom {
+        // `state.text` already carries the upstream's free-form input verbatim.
+        let done = "response.custom_tool_call_input.done";
+        out.extend(event_frame(
+            state,
+            done,
+            format!(
+                "{{\"type\":\"{done}\",\"item_id\":{},\"output_index\":{index},\"input\":{}}}",
+                jstr(&item_id),
+                jstr(&arguments)
+            ),
+        ));
+        let item = custom_tool_call_item(&item_id, &call_id, &name, &arguments);
+        out.extend(event_frame(
+            state,
+            "response.output_item.done",
+            format!(
+                "{{\"type\":\"response.output_item.done\",\"output_index\":{index},\"item\":{item}}}"
+            ),
+        ));
+        state.tool_arguments[index as usize] = item;
+        return;
     }
     out.extend(event_frame(
         state,
@@ -1368,6 +1459,7 @@ mod tests {
                     name: "Read".to_string(),
                     arguments: "{\"path\":\"a.txt\"}".to_string(),
                     signature: None,
+                    custom: false,
                 }),
             ]
         );
@@ -1416,6 +1508,7 @@ mod tests {
                 name: "apply_patch".to_string(),
                 arguments: "{\"input\":\"*** Begin Patch\"}".to_string(),
                 signature: None,
+                custom: true,
             })]
         );
         assert_eq!(
@@ -1515,6 +1608,7 @@ mod tests {
                 name: "Read".to_string(),
                 arguments: "{\"path\":\"a.txt\"}".to_string(),
                 signature: None,
+                custom: false,
             }],
             blocks: Vec::new(),
             stop_reason: StopReason::ToolCalls,
@@ -1565,6 +1659,7 @@ mod tests {
                     index: 0,
                     id: "call_1".to_string(),
                     name: "Read".to_string(),
+                    custom: false,
                 },
                 StreamEvent::ToolArgsDelta {
                     index: 0,
@@ -1798,6 +1893,94 @@ mod tests {
     }
 
     #[test]
+    fn custom_tool_calls_encode_as_custom_tool_call_items() {
+        let response = NeutralResponse {
+            tool_calls: vec![ToolUse {
+                id: "call_1".to_string(),
+                name: "apply_patch".to_string(),
+                arguments: r#"{"input":"*** Begin Patch"}"#.to_string(),
+                signature: None,
+                custom: true,
+            }],
+            ..NeutralResponse::default()
+        };
+        let bytes = ResponsesEncoder
+            .encode_response(&response, "gpt-5.6-luna", 1)
+            .expect("response encodes");
+        let body = String::from_utf8(bytes).unwrap();
+        assert!(
+            body.contains(r#"{"id":"ctc_call_1","type":"custom_tool_call","status":"completed","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}"#),
+            "{body}"
+        );
+        assert!(!body.contains("function_call"), "{body}");
+        assert!(!body.contains("arguments"), "{body}");
+    }
+
+    #[test]
+    fn custom_tool_stream_emits_custom_input_frames() {
+        let mut state = SseState::new("gpt-5.6-luna", 1);
+        let got = run(
+            &[
+                StreamEvent::ToolStart {
+                    index: 0,
+                    id: "call_1".to_string(),
+                    name: "apply_patch".to_string(),
+                    custom: true,
+                },
+                StreamEvent::ToolArgsDelta {
+                    index: 0,
+                    delta: "*** Begin".to_string(),
+                },
+                StreamEvent::ToolArgsDelta {
+                    index: 0,
+                    delta: " Patch".to_string(),
+                },
+                StreamEvent::ToolEnd { index: 0 },
+                StreamEvent::End {
+                    reason: StopReason::ToolCalls,
+                },
+            ],
+            &mut state,
+        );
+        let names: Vec<&str> = got.iter().map(|(event, _)| event.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.custom_tool_call_input.delta",
+                "response.custom_tool_call_input.delta",
+                "response.custom_tool_call_input.done",
+                "response.output_item.done",
+                "response.completed",
+            ]
+        );
+        assert!(
+            got[2]
+                .1
+                .contains(r#"{"id":"ctc_call_1","type":"custom_tool_call","status":"in_progress","call_id":"call_1","name":"apply_patch","input":""}"#),
+            "{}",
+            got[2].1
+        );
+        assert!(
+            got[5].1.contains(r#""input":"*** Begin Patch""#),
+            "{}",
+            got[5].1
+        );
+        assert!(
+            got[6].1.contains(r#"{"id":"ctc_call_1","type":"custom_tool_call","status":"completed","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}"#),
+            "{}",
+            got[6].1
+        );
+        assert!(
+            got[7].1.contains(r#"{"id":"ctc_call_1","type":"custom_tool_call","status":"completed","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}"#),
+            "{}",
+            got[7].1
+        );
+    }
+
+    #[test]
     fn several_tool_items_get_contiguous_output_indices() {
         let mut state = SseState::new("gpt-5.6-sol", 1);
         let got = run(
@@ -1806,6 +1989,7 @@ mod tests {
                     index: 0,
                     id: "call_1".to_string(),
                     name: "Read".to_string(),
+                    custom: false,
                 },
                 StreamEvent::ToolArgsDelta {
                     index: 0,
@@ -1816,6 +2000,7 @@ mod tests {
                     index: 1,
                     id: "call_2".to_string(),
                     name: "Write".to_string(),
+                    custom: false,
                 },
                 StreamEvent::ToolEnd { index: 1 },
                 StreamEvent::End {

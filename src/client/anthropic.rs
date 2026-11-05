@@ -134,6 +134,7 @@ fn decode_block(object: &Map<String, Value>) -> Option<ContentBlock> {
                 name: name.to_string(),
                 arguments,
                 signature: None,
+                custom: false,
             }))
         }
         Some("tool_result") => {
@@ -542,7 +543,9 @@ impl ClientEncoder for AnthropicEncoder {
                     ),
                 ));
             }
-            StreamEvent::ToolStart { index, id, name } => {
+            StreamEvent::ToolStart {
+                index, id, name, ..
+            } => {
                 ensure_start(state, &mut out);
                 close_open_block(state, &mut out);
                 let client_index = state.next_block_index;
@@ -752,6 +755,7 @@ mod tests {
             name: name.to_string(),
             arguments: arguments.to_string(),
             signature: None,
+            custom: false,
         }
     }
 
@@ -1118,6 +1122,7 @@ mod tests {
                 index: 0,
                 id: "toolu_9".to_string(),
                 name: "Bash".to_string(),
+                custom: false,
             },
             StreamEvent::ToolArgsDelta {
                 index: 0,
@@ -1180,6 +1185,7 @@ mod tests {
                 index: 0,
                 id: "toolu_1".to_string(),
                 name: "Read".to_string(),
+                custom: false,
             },
             StreamEvent::ToolEnd { index: 0 },
             StreamEvent::End {

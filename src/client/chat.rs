@@ -196,6 +196,7 @@ fn decode_tool_calls(value: Option<&Value>) -> Vec<ToolUse> {
             name: name.to_string(),
             arguments: decode_arguments(function.get("arguments")),
             signature: None,
+            custom: false,
         });
     }
     calls
@@ -764,6 +765,7 @@ mod tests {
             name: name.to_string(),
             arguments: arguments.to_string(),
             signature: None,
+            custom: false,
         }
     }
 
@@ -1137,6 +1139,7 @@ mod tests {
                 index: 0,
                 id: "call_1".to_string(),
                 name: "Read".to_string(),
+                custom: false,
             },
             StreamEvent::ToolArgsDelta {
                 index: 0,
@@ -1151,6 +1154,7 @@ mod tests {
                 index: 1,
                 id: "call_2".to_string(),
                 name: "Bash".to_string(),
+                custom: false,
             },
             StreamEvent::ToolEnd { index: 1 },
             StreamEvent::End {

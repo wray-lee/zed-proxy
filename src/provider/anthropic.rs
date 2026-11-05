@@ -796,6 +796,7 @@ fn parse_event(
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string(),
+                        custom: false,
                     });
                 }
                 Some(other) => log_dropped(&format!("block type {other}"), "content block"),
@@ -914,6 +915,7 @@ fn parse_event(
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
+                    custom: false,
                 });
             }
         }
@@ -1034,7 +1036,12 @@ pub fn decode_response(body: &[u8]) -> Result<NeutralResponse, GatewayError> {
             StreamEvent::Start { id } => response.id = id,
             StreamEvent::TextDelta { delta } => response.text.push_str(&delta),
             StreamEvent::ThinkingDelta { delta } => response.thinking.push_str(&delta),
-            StreamEvent::ToolStart { index, id, name } => {
+            StreamEvent::ToolStart {
+                index,
+                id,
+                name,
+                custom,
+            } => {
                 let slot = index as usize;
                 while tools.len() <= slot {
                     tools.push(ToolUse {
@@ -1042,10 +1049,12 @@ pub fn decode_response(body: &[u8]) -> Result<NeutralResponse, GatewayError> {
                         name: String::new(),
                         arguments: String::new(),
                         signature: None,
+                        custom: false,
                     });
                 }
                 tools[slot].id = id;
                 tools[slot].name = name;
+                tools[slot].custom = custom;
             }
             StreamEvent::ToolArgsDelta { index, delta } => {
                 if let Some(tool) = tools.get_mut(index as usize) {
@@ -1123,6 +1132,7 @@ mod tests {
             name: name.to_string(),
             arguments: arguments.to_string(),
             signature: None,
+            custom: false,
         })
     }
 
@@ -1381,6 +1391,7 @@ mod tests {
             name: "Read".to_string(),
             arguments: "{\"path\":\"a.txt\"}".to_string(),
             signature: None,
+            custom: false,
         }];
         request.messages = vec![
             message(Role::Assistant, vec![text("one"), text("two")]),
