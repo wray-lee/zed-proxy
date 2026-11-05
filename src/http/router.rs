@@ -145,19 +145,12 @@ fn empty_ok() -> Response {
     body::json_response(StatusCode::OK, Vec::new())
 }
 
-fn not_implemented(what: &str) -> Response {
-    body::json_response(
-        StatusCode::NOT_IMPLEMENTED,
-        format!("{{\"error\":\"{}\"}}", what.replace('"', "")).into_bytes(),
-    )
-}
-
 /// Only this exact path is the count_tokens prefix route; it is checked before
 /// the OPTIONS fallback so its OPTIONS answer stays non-empty (spec 70 §4).
 const COUNT_TOKENS_PREFIX: &str = "/v1/messages/count_tokens";
 
 // ---------------------------------------------------------------------------
-// Handlers. Each is one endpoint of spec 70 §2; bodies land in later tasks.
+// Handlers. Each is one endpoint of spec 70 §2.
 // ---------------------------------------------------------------------------
 
 /// `GET /` — embedded management page, any method (spec 70 §3.1).
@@ -691,20 +684,70 @@ fn refresh_body(
     body::json_response(status, text.into_bytes())
 }
 
-/// `GET /zed/usage` (spec 70 §3.13).
-pub async fn usage_handler(State(_state): State<AppState>, method: Method) -> Response {
+/// `GET /zed/usage` (spec 70 §3.13). Returns the active account's LLM-token
+/// JWT payload bytes exactly as the token carries them, never the full token
+/// or its signature.
+pub async fn usage_handler(State(state): State<AppState>, method: Method) -> Response {
     if method != Method::GET {
         return not_found();
     }
-    not_implemented("usage")
+    let services = &state.services;
+    let Some(account) = current_account(services) else {
+        return no_account();
+    };
+    let now = super::server::now_unix();
+    match crate::proxy::account_token(services, &account, now).await {
+        Ok(token) => match crate::upstream::jwt_payload_bytes(&token) {
+            Some(payload) => body::json_response(StatusCode::OK, payload),
+            None => internal_error(),
+        },
+        Err(_) => internal_error(),
+    }
 }
 
-/// `GET /zed/billing` (spec 70 §3.14).
-pub async fn billing_handler(State(_state): State<AppState>, method: Method) -> Response {
+/// `GET /zed/billing` (spec 70 §3.14). The upstream body is passed through
+/// unchanged; non-2xx, transport failure and over-cap bodies are 502.
+pub async fn billing_handler(State(state): State<AppState>, method: Method) -> Response {
     if method != Method::GET {
         return not_found();
     }
-    not_implemented("billing")
+    let services = &state.services;
+    let Some(account) = current_account(services) else {
+        return no_account();
+    };
+    let request = crate::upstream::token::me_request(&account.user_id, &account.credential);
+    // The upstream client already enforces the 1 MiB meta cap (spec 70 §6).
+    match services.upstream.execute(request).await {
+        Ok(response) if response.is_success() => body::json_response(StatusCode::OK, response.body),
+        _ => body::json_response(
+            StatusCode::BAD_GATEWAY,
+            br#"{"error":"failed to fetch user info"}"#.to_vec(),
+        ),
+    }
+}
+
+/// The active account, or `None` when no account is selected (spec 70 §3.13
+/// and §3.14 answer 400 rather than falling back to the first account).
+fn current_account(services: &Services) -> Option<crate::accounts::AccountSnapshot> {
+    let name = services.accounts.current_name();
+    if name.is_empty() {
+        return None;
+    }
+    services.accounts.snapshot(&name)
+}
+
+fn no_account() -> Response {
+    body::json_response(
+        StatusCode::BAD_REQUEST,
+        br#"{"error":"no account"}"#.to_vec(),
+    )
+}
+
+fn internal_error() -> Response {
+    body::json_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        br#"{"error":"internal error"}"#.to_vec(),
+    )
 }
 
 /// `POST /zed/login` (spec 70 §3.18). A non-JSON or non-object body is treated

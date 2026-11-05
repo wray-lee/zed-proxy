@@ -56,8 +56,11 @@ HTTP contract is preserved; the changes below are the ones a user can notice.
 - `GET /` sends `Cache-Control: no-store`.
 - `configs/claude.settings.json.example` and `accounts.example.json` are
   removed; the documentation no longer references them.
-- `GET /zed/usage` and `GET /zed/billing` are reserved and answer 501 in this
-  release.
+- `GET /zed/usage` returns the active account's LLM-token JWT payload (claims
+  only, never the full token); `GET /zed/billing` returns Zed's raw
+  `client/users/me` body unchanged. Both answer `400 {"error":"no account"}`
+  without an active account; token failures are `500 {"error":"internal
+  error"}` and upstream failures `502 {"error":"failed to fetch user info"}`.
 
 ### Fixed
 

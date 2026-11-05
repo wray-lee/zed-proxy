@@ -8,14 +8,19 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use serde_json::Value;
 
-/// Decoded payload of a JWT, or `None` when the token is malformed. The
-/// `/zed/usage` endpoint returns the payload re-encoded as JSON (spec 70 §3.13
-/// returns the original payload bytes, so callers that need exact bytes should
-/// decode themselves; this helper is for expiry and typing).
-pub fn jwt_payload(token: &str) -> Option<Value> {
+/// Raw payload bytes of a JWT, byte for byte as the token carries them
+/// (spec 70 §3.13), or `None` when the token is malformed or the payload is
+/// not JSON. Never includes the token itself or its signature.
+pub fn jwt_payload_bytes(token: &str) -> Option<Vec<u8>> {
     let payload = token.split('.').nth(1)?;
     let decoded = URL_SAFE_NO_PAD.decode(payload.as_bytes()).ok()?;
-    serde_json::from_slice(&decoded).ok()
+    serde_json::from_slice::<Value>(&decoded).ok()?;
+    Some(decoded)
+}
+
+/// Decoded payload of a JWT as a `Value`, for expiry and typing.
+pub fn jwt_payload(token: &str) -> Option<Value> {
+    serde_json::from_slice(&jwt_payload_bytes(token)?).ok()
 }
 
 /// `exp` from the payload, as Unix seconds.
@@ -41,9 +46,17 @@ mod tests {
     }
 
     #[test]
+    fn payload_bytes_are_returned_verbatim() {
+        let claims = "{\n  \"sub\": \"42\",  \"name\": \"alice\",\n  \"exp\": 1762300000\n}";
+        let token = unsigned(claims);
+        assert_eq!(jwt_payload_bytes(&token).unwrap(), claims.as_bytes());
+    }
+
+    #[test]
     fn malformed_tokens_are_rejected_without_panicking() {
         for token in ["", "abc", "a.b", "a.!!!.c"] {
             assert!(jwt_payload(token).is_none(), "{token:?}");
+            assert!(jwt_payload_bytes(token).is_none(), "{token:?}");
         }
     }
 }

@@ -21,8 +21,8 @@ All routes are handled by the router in `src/http/router.rs`. "Gateway key" mean
 | POST | `/zed/accounts/orb/refresh` | yes | Force-refresh the Orb credit balance (new in 0.3.0) |
 | POST | `/zed/accounts/switch` | yes | Switch the active account |
 | POST | `/zed/models/refresh` | yes | Force-refresh the model catalogue (new in 0.3.0) |
-| GET | `/zed/usage` | yes | Reserved for the active account's token claims; returns 501 in 0.3.0 |
-| GET | `/zed/billing` | yes | Reserved for the active account's billing data; returns 501 in 0.3.0 |
+| GET | `/zed/usage` | yes | The active account's LLM-token JWT payload (claims only, never the token) |
+| GET | `/zed/billing` | yes | The active account's raw `client/users/me` body from Zed |
 | POST | `/zed/login` | yes | Start a login; `{"mode":"paste"}` selects the paste flow |
 | POST | `/zed/login/complete` | yes | Submit the pasted callback URL |
 | GET | `/zed/login/status` | yes | Poll login state |
@@ -164,6 +164,26 @@ Forces a catalogue pull from Zed, with a 5-second minimum interval:
 | Body is JSON but not an object | 400 | `{"error":"request body must be an object"}` |
 
 `count` is the number of slugs in the registry (the `gpt-5.6` alias and disabled models excluded). A successful refresh also rebuilds the `/v1/models` cache.
+
+## `GET /zed/usage`
+
+Returns the LLM token's JWT payload, with the signature and the full token left out. The payload is the base64url-decoded bytes exactly as the token carries them: no re-encoding, no key reordering, no whitespace changes (the body is still valid JSON because the token's payload was):
+
+| Situation | HTTP | Body |
+| --- | --- | --- |
+| Account present, token minted or cached | 200 | the decoded payload bytes, e.g. `{"sub":"42","name":"alice","exp":1762300000}` |
+| No active account | 400 | `{"error":"no account"}` |
+| Token could not be minted or the token is malformed | 500 | `{"error":"internal error"}` |
+
+## `GET /zed/billing`
+
+Fetches `client/users/me` for the active account and returns the upstream body unchanged: no re-encoding, no key reordering, no field removal. The body can carry the account e-mail and plan, so it is protected by the gateway key.
+
+| Situation | HTTP | Body |
+| --- | --- | --- |
+| Account present, upstream 2xx | 200 | the raw `client/users/me` body |
+| No active account | 400 | `{"error":"no account"}` |
+| Upstream non-2xx, transport failure, or a body above 1 MiB | 502 | `{"error":"failed to fetch user info"}` |
 
 ## Login routes
 

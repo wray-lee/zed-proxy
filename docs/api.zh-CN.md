@@ -21,8 +21,8 @@
 | POST | `/zed/accounts/orb/refresh` | 需要 | 强制刷新 Orb 余额（0.3.0 新增） |
 | POST | `/zed/accounts/switch` | 需要 | 切换当前账号 |
 | POST | `/zed/models/refresh` | 需要 | 强制刷新模型目录（0.3.0 新增） |
-| GET | `/zed/usage` | 需要 | 预留给当前账号的令牌声明；0.3.0 返回 501 |
-| GET | `/zed/billing` | 需要 | 预留给当前账号的账单数据；0.3.0 返回 501 |
+| GET | `/zed/usage` | 需要 | 当前账号 LLM 令牌的 JWT 载荷（只有声明，不含令牌本身） |
+| GET | `/zed/billing` | 需要 | 当前账号从 Zed 取回的 `client/users/me` 原始响应体 |
 | POST | `/zed/login` | 需要 | 发起登录；`{"mode":"paste"}` 选择粘贴流程 |
 | POST | `/zed/login/complete` | 需要 | 提交粘贴的回调网址 |
 | GET | `/zed/login/status` | 需要 | 轮询登录状态 |
@@ -164,6 +164,26 @@ URL 必须是 `https`，主机必须恰好是 `portal.withorb.com`（不允许 u
 | 请求体是合法 JSON 但不是对象 | 400 | `{"error":"request body must be an object"}` |
 
 `count` 是注册表实际收录的 slug 数（不含 `gpt-5.6` 别名与被禁用项）。刷新成功同时重建 `/v1/models` 的缓存。
+
+## `GET /zed/usage`
+
+返回 LLM 令牌的 JWT 载荷，不含签名与完整令牌。载荷就是 base64url 解码后的原始字节：不重新编码、不重排键、不改变空白（令牌的载荷本身是合法 JSON，因此响应体仍是合法 JSON）：
+
+| 情况 | HTTP | 响应体 |
+| --- | --- | --- |
+| 有账号，令牌已缓存或换取成功 | 200 | 解码后的载荷原始字节，例如 `{"sub":"42","name":"alice","exp":1762300000}` |
+| 没有当前账号 | 400 | `{"error":"no account"}` |
+| 无法换取令牌或令牌格式错误 | 500 | `{"error":"internal error"}` |
+
+## `GET /zed/billing`
+
+为当前账号请求 `client/users/me`，并把上游响应体原样返回：不重新编码、不重排键、不裁剪字段。响应可能包含账号邮箱与套餐信息，因此受网关 key 保护。
+
+| 情况 | HTTP | 响应体 |
+| --- | --- | --- |
+| 有账号，上游返回 2xx | 200 | 原始的 `client/users/me` 响应体 |
+| 没有当前账号 | 400 | `{"error":"no account"}` |
+| 上游非 2xx、传输失败，或响应体超过 1 MiB | 502 | `{"error":"failed to fetch user info"}` |
 
 ## 登录路由
 
