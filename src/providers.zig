@@ -2068,13 +2068,27 @@ test "Chat Completions keeps streamed delta text without duplicating the complet
 fn buildGoogleRequest(allocator: std.mem.Allocator, w: *std.io.Writer, parsed: std.json.Value, model: []const u8, is_anthropic: bool) !void {
     try w.print("\"model\":\"models/{s}\",", .{model});
 
-    if (is_anthropic) {
-        if (try collectAnthropicSystemText(allocator, parsed)) |sys_text| {
-            defer allocator.free(sys_text);
-            try w.writeAll("\"systemInstruction\":{\"parts\":[{\"text\":");
-            try std.json.Stringify.encodeJsonString(sys_text, .{}, w);
-            try w.writeAll("}]},");
+    // Zed's Google parser only knows the roles `user` and `model` ("unknown
+    // variant `system`"), so system and developer text, from Anthropic's
+    // top-level `system` or from messages, goes into systemInstruction.
+    const top_system = if (is_anthropic) try collectAnthropicSystemText(allocator, parsed) else null;
+    defer if (top_system) |text| allocator.free(text);
+    const message_system = try collectMessageSystemText(allocator, parsed);
+    defer if (message_system) |text| allocator.free(text);
+    if (top_system != null or message_system != null) {
+        try w.writeAll("\"systemInstruction\":{\"parts\":[");
+        if (top_system) |text| {
+            try w.writeAll("{\"text\":");
+            try std.json.Stringify.encodeJsonString(text, .{}, w);
+            try w.writeAll("}");
         }
+        if (message_system) |text| {
+            if (top_system != null) try w.writeAll(",");
+            try w.writeAll("{\"text\":");
+            try std.json.Stringify.encodeJsonString(text, .{}, w);
+            try w.writeAll("}");
+        }
+        try w.writeAll("]},");
     }
 
     // Zed's Google route deserializes thinkingLevel as an uppercase Rust enum
@@ -2161,15 +2175,20 @@ fn buildGoogleRequest(allocator: std.mem.Allocator, w: *std.io.Writer, parsed: s
     try w.writeAll("\"contents\":[");
 
     if (parsed.object.get("messages")) |msgs| {
-        if (msgs == .array) for (msgs.array.items, 0..) |msg, i| {
+        var wrote_content = false;
+        if (msgs == .array) for (msgs.array.items) |msg| {
             if (msg != .object) continue;
             const role = switch (msg.object.get("role") orelse continue) {
                 .string => |s| s,
                 else => continue,
             };
+            if (isSystemInstructionRole(role)) continue;
             const content = msg.object.get("content") orelse continue;
-            if (i > 0) try w.writeAll(",");
-            const gemini_role = if (std.mem.eql(u8, role, "assistant")) "model" else role;
+            if (wrote_content) try w.writeAll(",");
+            wrote_content = true;
+            // Anything that is not the model speaking (user, tool results) is a
+            // `user` turn, the only other role Zed accepts.
+            const gemini_role = if (std.mem.eql(u8, role, "assistant")) "model" else "user";
             try w.print("{{\"parts\":[", .{});
             switch (content) {
                 .string => |s| {
@@ -2178,15 +2197,18 @@ fn buildGoogleRequest(allocator: std.mem.Allocator, w: *std.io.Writer, parsed: s
                     try w.writeAll("}");
                 },
                 .array => {
-                    for (content.array.items, 0..) |item, ci| {
-                        if (ci > 0) try w.writeAll(",");
-                        if (item == .object) {
-                            const text_val = item.object.get("text") orelse continue;
-                            if (text_val != .string) continue;
-                            try w.writeAll("{\"text\":");
-                            try std.json.Stringify.encodeJsonString(text_val.string, .{}, w);
-                            try w.writeAll("}");
-                        }
+                    // Blocks without text (images, tool_use) are skipped; the
+                    // separator is written only before a part that is emitted.
+                    var wrote_part = false;
+                    for (content.array.items) |item| {
+                        if (item != .object) continue;
+                        const text_val = item.object.get("text") orelse continue;
+                        if (text_val != .string) continue;
+                        if (wrote_part) try w.writeAll(",");
+                        wrote_part = true;
+                        try w.writeAll("{\"text\":");
+                        try std.json.Stringify.encodeJsonString(text_val.string, .{}, w);
+                        try w.writeAll("}");
                     }
                 },
                 else => {},
