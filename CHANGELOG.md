@@ -68,6 +68,15 @@ HTTP contract is preserved; the changes below are the ones a user can notice.
 
 ### Fixed
 
+- The Web UI no longer renders a blank console when the browser blocks site
+  data. The i18n module read `localStorage` while initializing; the uncaught
+  `SecurityError` stopped the whole entry script, so no navigation or page
+  container rendered (reported as the client setup and health pages
+  disappearing). Every `localStorage` access now falls back to an
+  in-memory/default value. Evidence in `webui-check/rust-0.3.0/`: fake-gateway
+  probe `tools/localstorage-blocked.js` (0.2.2 `dist`: `nav:0`, `appLen:0`,
+  `EXC SecurityError`; 0.3.0 `dist`: five non-empty pages, no errors) plus
+  `accounts.{en,zh}.png`, `health.{en,zh}.png`, `buttons.{en,zh}.log`.
 - `POST /zed/accounts/switch` with a non-object body (for example `[]`) no
   longer crashes the process; it returns 400.
 - An `accounts.json` whose root is an array, or whose `accounts` member is not

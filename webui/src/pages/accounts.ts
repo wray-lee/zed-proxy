@@ -124,13 +124,13 @@ function probeModelName(): string {
 }
 
 /**
- * The probe budget depends on the model: Gemini requests carry no cap and
- * GPT-5.5 is floored by the conversion layer, so a fixed "32" would lie.
- * Mirrors `output_budget` in src/provider/openai.rs.
+ * The probe asks for 32 output tokens; only GPT-5.5 is floored higher (xhigh
+ * reasoning). Gemini computes min(max(32, 32), catalogue max) = 32, so it gets
+ * the same label as everything else. Mirrors `max_output_tokens` in
+ * src/provider/google.rs and `output_budget` in src/provider/openai.rs.
  */
 function probeBudgetLabel(): string {
   const slug = getProbeModel()
-  if (slug.startsWith('gemini')) return t('不设输出上限', 'no output cap')
   if (slug.startsWith('gpt-5.5')) return t('最多 32768 个输出 Token', 'at most 32768 output tokens')
   return t('最多 32 个输出 Token', 'at most 32 output tokens')
 }

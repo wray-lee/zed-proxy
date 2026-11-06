@@ -1,9 +1,6 @@
 //! Credential-free probe of one account: a single tiny real completion, no
 //! failover, result written back to the account (spec `80-probe-and-webui-contract.md`
 //! §1–§3).
-//!
-//! Implementation task owns this file. The fixed pieces are the request body,
-//! the effort/budget selection rules and the success test.
 
 use serde_json::Value;
 
