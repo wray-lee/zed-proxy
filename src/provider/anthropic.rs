@@ -9,6 +9,7 @@
 //! needs serde_json's `preserve_order` feature (a Cargo.toml change).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
 use serde_json::Value;
 
@@ -36,7 +37,27 @@ pub const EMPTY_SCHEMA: &str = r#"{"type":"object","properties":{}}"#;
 /// (spec 45 §4.3 item 4).
 pub const UNPAIRED_PREFIX: &str = "[unpaired tool result ";
 
-pub struct AnthropicProvider;
+/// Request-scoped custom tool names, captured by `encode_request` and used by
+/// the response decoders (spec 42 §1.5A). `provider/mod.rs` constructs one
+/// instance per request from the same-named const; each instance gets a fresh
+/// Mutex, so concurrent requests cannot see each other's declarations.
+pub struct AnthropicProvider {
+    custom_tools: Mutex<Vec<String>>,
+}
+
+#[allow(non_upper_case_globals, clippy::declare_interior_mutable_const)]
+pub const AnthropicProvider: AnthropicProvider = AnthropicProvider {
+    custom_tools: Mutex::new(Vec::new()),
+};
+
+impl AnthropicProvider {
+    fn custom_names(&self) -> Vec<String> {
+        self.custom_tools
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+    }
+}
 
 impl ProviderEncoder for AnthropicProvider {
     fn kind(&self) -> ProviderKind {
@@ -48,15 +69,23 @@ impl ProviderEncoder for AnthropicProvider {
         request: &NeutralRequest,
         capabilities: &ModelCapabilities,
     ) -> Result<Vec<u8>, GatewayError> {
+        *self.custom_tools.lock().unwrap_or_else(|p| p.into_inner()) = request
+            .tools
+            .iter()
+            .filter(|tool| tool.custom)
+            .map(|tool| tool.name.clone())
+            .collect();
         Ok(encode_request(request, capabilities).into_bytes())
     }
 
     fn decode_response(&self, body: &[u8]) -> Result<NeutralResponse, GatewayError> {
-        decode_response(body)
+        decode_response_with(body, &self.custom_names())
     }
 
     fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
-        Box::new(AnthropicStreamDecoder::new())
+        Box::new(AnthropicStreamDecoder::with_custom_tools(
+            self.custom_names(),
+        ))
     }
 }
 
@@ -299,7 +328,15 @@ fn encode_tools(tools: &[crate::neutral::ToolDef]) -> Option<String> {
             log_dropped("duplicate tool name", "tool");
             continue;
         }
-        let schema = if tool.parameters.is_object() {
+        // Responses custom tools have no free-form equivalent upstream; declare
+        // a single `input` string so the model returns {"input":"…"} (42 §1.5A).
+        // The declaration's `format` (grammar/lark/regex) has no counterpart.
+        if tool.custom && tool.format.is_some() {
+            log_dropped("custom tool format has no upstream equivalent", "format");
+        }
+        let schema = if tool.custom {
+            compact(&crate::neutral::tools::custom_tool_schema())
+        } else if tool.parameters.is_object() {
             compact(&tool.parameters)
         } else {
             EMPTY_SCHEMA.to_string()
@@ -431,7 +468,7 @@ fn encode_message_content(
                     "{{\"type\":\"tool_use\",\"id\":{},\"name\":{},\"input\":{}}}",
                     jstr(&call.id),
                     jstr(&call.name),
-                    tool_input(&call.arguments)
+                    tool_input(call)
                 ));
             }
             ContentBlock::ToolResult(result) => {
@@ -485,8 +522,17 @@ fn encode_message_content(
     results
 }
 
-fn tool_input(arguments: &str) -> String {
-    match serde_json::from_str::<Value>(arguments) {
+fn tool_input(call: &ToolUse) -> String {
+    // A custom call carries free-form text; the degraded declaration expects
+    // the single `input` string property (spec 42 §1.5A).
+    if call.custom {
+        return serde_json::from_str::<Value>(&crate::neutral::tools::wrap_custom_input(
+            &call.arguments,
+        ))
+        .map(|value| compact(&value))
+        .unwrap_or_else(|_| "{}".to_string());
+    }
+    match serde_json::from_str::<Value>(&call.arguments) {
         Ok(value) if value.is_object() => compact(&value),
         Ok(_) => {
             log_dropped("tool arguments not an object", "tool arguments");
@@ -541,10 +587,20 @@ pub struct AnthropicStreamDecoder {
     open_tool: Option<u64>,
     stop_reason: StopReason,
     usage: Usage,
+    /// Custom tool names declared by this request (spec 42 §1.5A).
+    custom_tools: Vec<String>,
+    /// Responses-shaped upstream: item_id / output_index → local tool index
+    /// (spec 45 §4.4A), so interleaved deltas reach their own call.
+    response_tool_by_item: HashMap<String, u64>,
+    response_tool_by_index: HashMap<u64, u64>,
+    /// Per-upstream-block state for the free-form `{"input":…}` wrapper: the
+    /// model streams it in fragments, so buffer until `content_block_stop`.
+    /// `(tool name, neutral index, accumulated JSON wrapper)`.
+    custom_blocks: HashMap<u64, (String, u64, String)>,
 }
 
 impl AnthropicStreamDecoder {
-    pub fn new() -> Self {
+    pub fn with_custom_tools(custom_tools: Vec<String>) -> Self {
         Self {
             shape: Shape::Unknown,
             saw_model_event: false,
@@ -556,7 +612,60 @@ impl AnthropicStreamDecoder {
             open_tool: None,
             stop_reason: StopReason::default(),
             usage: Usage::default(),
+            custom_tools,
+            custom_blocks: HashMap::new(),
+            response_tool_by_item: HashMap::new(),
+            response_tool_by_index: HashMap::new(),
         }
+    }
+
+    pub fn new() -> Self {
+        Self::with_custom_tools(Vec::new())
+    }
+
+    fn is_custom(&self, name: &str) -> bool {
+        self.custom_tools.iter().any(|declared| declared == name)
+    }
+
+    /// Start buffering the `{"input":…}` wrapper Claude streams for a custom
+    /// tool. `key` is the upstream block index (Anthropic shape) or the neutral
+    /// tool index (Responses shape).
+    fn start_custom(&mut self, key: u64, name: &str, tool_index: u64) -> bool {
+        if !self.is_custom(name) {
+            return false;
+        }
+        self.custom_blocks
+            .insert(key, (name.to_string(), tool_index, String::new()));
+        true
+    }
+
+    /// A fragment of a custom wrapper is held until the call closes; JSON
+    /// fragments are not valid free-form `custom_tool_call_input.delta` text.
+    fn push_custom_fragment(&mut self, key: u64, fragment: &str) -> bool {
+        match self.custom_blocks.get_mut(&key) {
+            Some((_, _, buffer)) => {
+                buffer.push_str(fragment);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Emit one free-form delta for a completed custom call (spec 42 §3.2
+    /// item 5: synthesise a single delta when the upstream gives the whole
+    /// argument). Returns the neutral tool index, or `None` if not custom.
+    fn finish_custom(&mut self, key: u64, events: &mut Vec<StreamEvent>) -> Option<u64> {
+        let (name, tool_index, buffer) = self.custom_blocks.remove(&key)?;
+        if !buffer.is_empty() {
+            let parsed: Value = serde_json::from_str(&buffer).unwrap_or(Value::Null);
+            let (_, text) =
+                crate::neutral::tools::restore_custom_call(&name, &parsed, &self.custom_tools);
+            events.push(StreamEvent::ToolArgsDelta {
+                index: tool_index,
+                delta: text,
+            });
+        }
+        Some(tool_index)
     }
 
     fn adopt(&mut self, shape: Shape) -> bool {
@@ -784,6 +893,12 @@ fn parse_event(
                     state.blocks.insert(index, BlockKind::ToolUse);
                     let tool_index = tool_ordinal(state, index);
                     state.open_tool = Some(tool_index);
+                    let name = block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let custom = state.start_custom(index, &name, tool_index);
                     events.push(StreamEvent::ToolStart {
                         index: tool_index,
                         id: block
@@ -791,12 +906,8 @@ fn parse_event(
                             .and_then(Value::as_str)
                             .unwrap_or_default()
                             .to_string(),
-                        name: block
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                        custom: false,
+                        name,
+                        custom,
                     });
                 }
                 Some(other) => log_dropped(&format!("block type {other}"), "content block"),
@@ -832,14 +943,17 @@ fn parse_event(
                 (Some("signature_delta"), _) => {}
                 (Some("input_json_delta"), Some(BlockKind::ToolUse)) => {
                     let tool_index = tool_ordinal(state, index);
-                    events.push(StreamEvent::ToolArgsDelta {
-                        index: tool_index,
-                        delta: delta
-                            .get("partial_json")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                    });
+                    let fragment = delta
+                        .get("partial_json")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    if !state.push_custom_fragment(index, &fragment) {
+                        events.push(StreamEvent::ToolArgsDelta {
+                            index: tool_index,
+                            delta: fragment,
+                        });
+                    }
                 }
                 _ => log_dropped("delta without its open block", "delta"),
             }
@@ -848,7 +962,9 @@ fn parse_event(
             let index = value.get("index").and_then(Value::as_u64).unwrap_or(0);
             match state.blocks.remove(&index) {
                 Some(BlockKind::ToolUse) => {
-                    let tool_index = tool_ordinal(state, index);
+                    let tool_index = state
+                        .finish_custom(index, events)
+                        .unwrap_or_else(|| tool_ordinal(state, index));
                     state.open_tool = None;
                     events.push(StreamEvent::ToolEnd { index: tool_index });
                 }
@@ -902,6 +1018,27 @@ fn parse_event(
                 let tool_index = state.tool_count;
                 state.tool_count += 1;
                 state.open_tool = Some(tool_index);
+                let name = item
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let custom = state.start_custom(tool_index, &name, tool_index);
+                if let Some(id) = item.get("id").and_then(Value::as_str) {
+                    state
+                        .response_tool_by_item
+                        .insert(id.to_string(), tool_index);
+                }
+                if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+                    state
+                        .response_tool_by_item
+                        .insert(format!("call:{call_id}"), tool_index);
+                }
+                if let Some(output_index) = value.get("output_index").and_then(Value::as_u64) {
+                    state
+                        .response_tool_by_index
+                        .insert(output_index, tool_index);
+                }
                 events.push(StreamEvent::ToolStart {
                     index: tool_index,
                     id: item
@@ -910,25 +1047,35 @@ fn parse_event(
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string(),
-                    name: item
-                        .get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                    custom: false,
+                    name,
+                    custom,
                 });
             }
         }
         "response.function_call_arguments.delta" => {
-            if let Some(tool_index) = state.open_tool {
-                events.push(StreamEvent::ToolArgsDelta {
-                    index: tool_index,
-                    delta: value
-                        .get("delta")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                });
+            let resolved = value
+                .get("item_id")
+                .and_then(Value::as_str)
+                .and_then(|id| state.response_tool_by_item.get(id).copied())
+                .or_else(|| {
+                    value
+                        .get("output_index")
+                        .and_then(Value::as_u64)
+                        .and_then(|index| state.response_tool_by_index.get(&index).copied())
+                })
+                .or(state.open_tool);
+            if let Some(tool_index) = resolved {
+                let fragment = value
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if !state.push_custom_fragment(tool_index, &fragment) {
+                    events.push(StreamEvent::ToolArgsDelta {
+                        index: tool_index,
+                        delta: fragment,
+                    });
+                }
             } else {
                 log_dropped("tool arguments without an open tool", "tool delta");
             }
@@ -942,6 +1089,7 @@ fn parse_event(
                     == Some("function_call");
             if is_tool_item {
                 if let Some(tool_index) = state.open_tool.take() {
+                    state.finish_custom(tool_index, events);
                     events.push(StreamEvent::ToolEnd { index: tool_index });
                 }
             }
@@ -1014,9 +1162,14 @@ impl StreamDecoder for AnthropicStreamDecoder {
 
 /// Fold the stream events of a complete body into the neutral response
 /// (spec 21 §13).
-pub fn decode_response(body: &[u8]) -> Result<NeutralResponse, GatewayError> {
+/// Non-streaming reduction with this request's custom tool names (spec 42
+/// §1.5A): a custom call's `{"input":…}` wrapper is unwrapped to free text.
+pub fn decode_response_with(
+    body: &[u8],
+    custom_tools: &[String],
+) -> Result<NeutralResponse, GatewayError> {
     let text = String::from_utf8_lossy(body);
-    let mut decoder = AnthropicStreamDecoder::new();
+    let mut decoder = AnthropicStreamDecoder::with_custom_tools(custom_tools.to_vec());
     let mut events: Vec<StreamEvent> = Vec::new();
     for line in text.split('\n') {
         events.extend(decoder.push_line(line)?);
@@ -1063,7 +1216,7 @@ pub fn decode_response(body: &[u8]) -> Result<NeutralResponse, GatewayError> {
             }
             StreamEvent::ToolEnd { index } => {
                 if let Some(tool) = tools.get_mut(index as usize) {
-                    if tool.arguments.is_empty() {
+                    if tool.arguments.is_empty() && !tool.custom {
                         tool.arguments.push_str("{}");
                     }
                 }
@@ -1086,6 +1239,11 @@ pub fn decode_response(body: &[u8]) -> Result<NeutralResponse, GatewayError> {
     }
     response.usage = response.usage.with_computed_total();
     Ok(response)
+}
+
+#[cfg(test)]
+fn decode_response(body: &[u8]) -> Result<NeutralResponse, GatewayError> {
+    decode_response_with(body, &[])
 }
 
 #[cfg(test)]
@@ -1187,6 +1345,7 @@ mod tests {
             strict: None,
             cache_control: None,
             format: None,
+            custom: false,
         }];
         request.messages = vec![
             message(Role::User, vec![text("ls")]),
@@ -1324,6 +1483,7 @@ mod tests {
                 strict: None,
                 cache_control: None,
                 format: None,
+                custom: false,
             },
             ToolDef {
                 name: String::new(),
@@ -1332,6 +1492,7 @@ mod tests {
                 strict: None,
                 cache_control: None,
                 format: None,
+                custom: false,
             },
             ToolDef {
                 name: "Bash".to_string(),
@@ -1340,6 +1501,7 @@ mod tests {
                 strict: None,
                 cache_control: None,
                 format: None,
+                custom: false,
             },
         ];
         assert_eq!(
@@ -1361,6 +1523,7 @@ mod tests {
             strict: None,
             cache_control: None,
             format: None,
+            custom: false,
         }];
         assert!(!encode(&request, &caps()).contains("tool_choice"));
 
@@ -1524,6 +1687,7 @@ mod tests {
             strict: None,
             cache_control: None,
             format: None,
+            custom: false,
         }];
         request.tool_choice = ToolChoice::Named("Read".to_string());
         let mut no_tools = caps();
@@ -1755,5 +1919,83 @@ mod tests {
         assert_eq!(response.text, "hi");
         assert_eq!(response.stop_reason, StopReason::Stop);
         assert_eq!(response.usage.output_tokens, 0);
+    }
+
+    #[test]
+    fn custom_tool_downgrades_and_restores_through_claude() {
+        use crate::provider::ProviderEncoder;
+
+        let mut req = request();
+        req.tools = vec![ToolDef {
+            name: "apply_patch".to_string(),
+            description: "Patch files".to_string(),
+            parameters: serde_json::json!({"type":"object","properties":{}}),
+            strict: None,
+            cache_control: None,
+            format: Some(serde_json::json!({"type":"grammar"})),
+            custom: true,
+        }];
+        let provider: Box<dyn ProviderEncoder> = Box::new(AnthropicProvider);
+        let encoded = provider.encode_request(&req, &caps()).unwrap();
+        let body = String::from_utf8(encoded).unwrap();
+        assert!(body.contains(r#""input_schema":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}"#), "{body}");
+        assert!(!body.contains("grammar"), "{body}");
+
+        let upstream = concat!(
+            r#"{"type":"message_start","message":{"id":"msg_x","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}"#,
+            "\n",
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"apply_patch","input":{}}}"#,
+            "\n",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"input\":\"*** Begin Patch\"}"}}"#,
+            "\n",
+            r#"{"type":"content_block_stop","index":0}"#,
+            "\n",
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}"#,
+            "\n",
+            r#"{"type":"message_stop"}"#,
+            "\n",
+        );
+        let reduced = provider.decode_response(upstream.as_bytes()).unwrap();
+        assert_eq!(reduced.tool_calls.len(), 1);
+        assert!(reduced.tool_calls[0].custom);
+        assert_eq!(reduced.tool_calls[0].arguments, "*** Begin Patch");
+
+        let mut stream = provider.stream_decoder();
+        let mut events = Vec::new();
+        for line in upstream.split('\n') {
+            events.extend(stream.push_line(line).unwrap());
+        }
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::ToolStart { custom: true, .. })));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ToolArgsDelta { delta, .. } if delta == "*** Begin Patch"
+        )));
+    }
+
+    #[test]
+    fn responses_shaped_interleaved_deltas_keep_their_own_tool() {
+        let lines = [
+            r#"{"event":{"type":"response.output_item.added","output_index":3,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"A"}}}"#,
+            r#"{"event":{"type":"response.output_item.added","output_index":5,"item":{"id":"fc_2","type":"function_call","call_id":"call_2","name":"B"}}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":3,"delta":"{\"x\":1}"}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.delta","item_id":"fc_2","output_index":5,"delta":"{\"y\":2}"}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":3}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.done","item_id":"fc_2","output_index":5}}"#,
+        ];
+        let mut decoder = AnthropicStreamDecoder::new();
+        let mut events = Vec::new();
+        for line in lines {
+            events.extend(decoder.push_line(line).unwrap());
+        }
+        let deltas: Vec<(u64, &str)> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ToolArgsDelta { index, delta } => Some((*index, delta.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas, vec![(0, "{\"x\":1}"), (1, "{\"y\":2}")]);
     }
 }

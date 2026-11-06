@@ -13,6 +13,12 @@ use serde_json::{Map, Value};
 
 use crate::catalog::Catalog;
 use crate::error::GatewayError;
+#[cfg(test)]
+use crate::neutral::content::signed_tool_start_id;
+use crate::neutral::content::{
+    decode_tool_output, first_signature, split_signed_tool_start_id, tool_result_content_block,
+    tool_result_text,
+};
 use crate::neutral::{
     ContentBlock, ImageSource, Message, NeutralRequest, NeutralResponse, Reasoning, Role,
     StopReason, StreamEvent, SystemBlock, ToolChoice, ToolDef, ToolResult, ToolUse, Usage,
@@ -195,47 +201,49 @@ fn decode_tool_calls(value: Option<&Value>) -> Vec<ToolUse> {
             id: tool_call_id(id),
             name: name.to_string(),
             arguments: decode_arguments(function.get("arguments")),
-            signature: None,
+            signature: first_signature(
+                object,
+                &[
+                    &["extra_content", "google", "thought_signature"],
+                    &["thought_signature"],
+                    &["thoughtSignature"],
+                ],
+            ),
             custom: false,
         });
     }
     calls
 }
 
-fn tool_content_text(value: Option<&Value>) -> String {
-    match value {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .filter_map(|item| {
-                let object = item.as_object()?;
-                if object.get("type").and_then(Value::as_str) == Some("text") {
-                    object.get("text").and_then(Value::as_str)
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-        _ => String::new(),
-    }
-}
-
-fn decode_tool_message(object: &Map<String, Value>) -> Option<ToolResult> {
+fn decode_tool_message_blocks(object: &Map<String, Value>, structured: bool) -> Vec<ContentBlock> {
     let id = object
         .get("tool_call_id")
         .and_then(Value::as_str)
         .unwrap_or_default();
     if id.is_empty() {
         warn("dropped tool message without tool_call_id");
-        return None;
+        return Vec::new();
     }
-    Some(ToolResult {
+    let blocks = decode_tool_output(object.get("content"));
+    let mut parts = vec![ContentBlock::ToolResult(ToolResult {
         tool_use_id: id.to_string(),
-        output: tool_content_text(object.get("content")),
+        output: tool_result_text(&blocks),
         is_error: false,
         custom: false,
-    })
+    })];
+    // Plain string history stays a single ToolResult, preserving the existing
+    // neutral shape; only non-text payloads need the ordered blocks.
+    if structured
+        && blocks.iter().any(|block| {
+            matches!(
+                block.get("type").and_then(Value::as_str),
+                Some("image" | "json")
+            )
+        })
+    {
+        parts.push(tool_result_content_block(id, blocks));
+    }
+    parts
 }
 
 fn decode_tools(value: Option<&Value>) -> Vec<ToolDef> {
@@ -280,6 +288,7 @@ fn decode_tools(value: Option<&Value>) -> Vec<ToolDef> {
             strict,
             cache_control: None,
             format: None,
+            custom: false,
         });
     }
     tools
@@ -375,7 +384,7 @@ impl ClientDecoder for ChatDecoder {
 
         let mut system_texts: Vec<String> = Vec::new();
         let mut messages: Vec<Message> = Vec::new();
-        let mut pending_results: Vec<ToolResult> = Vec::new();
+        let mut pending_results: Vec<ContentBlock> = Vec::new();
         let mut tool_uses: Vec<ToolUse> = Vec::new();
 
         if let Some(items) = body.get("messages").and_then(Value::as_array) {
@@ -391,10 +400,7 @@ impl ClientDecoder for ChatDecoder {
                 if role != "tool" && !pending_results.is_empty() && role != "user" {
                     messages.push(Message {
                         role: Role::User,
-                        parts: pending_results
-                            .drain(..)
-                            .map(ContentBlock::ToolResult)
-                            .collect(),
+                        parts: std::mem::take(&mut pending_results),
                     });
                 }
                 match role {
@@ -405,10 +411,7 @@ impl ClientDecoder for ChatDecoder {
                         }
                     }
                     "user" => {
-                        let mut parts: Vec<ContentBlock> = pending_results
-                            .drain(..)
-                            .map(ContentBlock::ToolResult)
-                            .collect();
+                        let mut parts: Vec<ContentBlock> = std::mem::take(&mut pending_results);
                         parts.extend(decode_content(object.get("content")));
                         messages.push(Message {
                             role: Role::User,
@@ -425,11 +428,10 @@ impl ClientDecoder for ChatDecoder {
                             parts,
                         });
                     }
-                    "tool" => {
-                        if let Some(result) = decode_tool_message(object) {
-                            pending_results.push(result);
-                        }
-                    }
+                    "tool" => pending_results.extend(decode_tool_message_blocks(
+                        object,
+                        provider == crate::catalog::Provider::Google,
+                    )),
                     other => warn(&format!("dropped message with role {other:?}")),
                 }
             }
@@ -437,10 +439,7 @@ impl ClientDecoder for ChatDecoder {
         if !pending_results.is_empty() {
             messages.push(Message {
                 role: Role::User,
-                parts: pending_results
-                    .drain(..)
-                    .map(ContentBlock::ToolResult)
-                    .collect(),
+                parts: std::mem::take(&mut pending_results),
             });
         }
 
@@ -533,11 +532,17 @@ fn tool_calls_json(calls: &[ToolUse]) -> String {
             out.push(',');
         }
         out.push_str(&format!(
-            "{{\"id\":{},\"type\":\"function\",\"function\":{{\"name\":{},\"arguments\":{}}}}}",
+            "{{\"id\":{},\"type\":\"function\",\"function\":{{\"name\":{},\"arguments\":{}}}",
             jstr(&call.id),
             jstr(&call.name),
             jstr(&call.arguments)
         ));
+        if let Some(signature) = call.signature.as_deref() {
+            out.push_str(",\"extra_content\":{\"google\":{\"thought_signature\":");
+            out.push_str(&jstr(signature));
+            out.push_str("}}");
+        }
+        out.push('}');
     }
     out.push(']');
     out
@@ -610,15 +615,30 @@ impl ClientEncoder for ChatEncoder {
                 ));
                 out
             }
-            StreamEvent::ToolStart { id, name, .. } => {
+            StreamEvent::ToolStart {
+                index, id, name, ..
+            } => {
+                let (id, signature) = split_signed_tool_start_id(id);
                 let mut out = role_frame(state);
-                let index = state.tool_count;
-                state.tool_count += 1;
-                state.tool_arguments.push(String::new());
+                // `index` is the only routing key (spec 40 §3.3.1); slot 0
+                // must stay empty if the stream starts at tool index 1.
+                if !state.ensure_tool(*index, *index, false) {
+                    warn("dropped tool start with out-of-range index");
+                    return Ok(None);
+                }
+                state.tool_count = state.tool_count.max(*index + 1);
+                let carrier = signature
+                    .map(|value| {
+                        format!(
+                            ",\"extra_content\":{{\"google\":{{\"thought_signature\":{}}}}}",
+                            jstr(value)
+                        )
+                    })
+                    .unwrap_or_default();
                 out.extend(chunk(
                     state,
                     &format!(
-                        "{{\"tool_calls\":[{{\"index\":{index},\"id\":{},\"type\":\"function\",\"function\":{{\"name\":{},\"arguments\":\"\"}}}}]}}",
+                        "{{\"tool_calls\":[{{\"index\":{index},\"id\":{},\"type\":\"function\",\"function\":{{\"name\":{},\"arguments\":\"\"}}{carrier}}}]}}",
                         jstr(id),
                         jstr(name)
                     ),
@@ -626,37 +646,42 @@ impl ClientEncoder for ChatEncoder {
                 ));
                 out
             }
-            StreamEvent::ToolArgsDelta { delta, .. } => {
-                if let Some(args) = state.tool_arguments.last_mut() {
+            StreamEvent::ToolArgsDelta { index, delta } => {
+                let Some(slot) = state.tool_slot(*index) else {
+                    warn("dropped tool arguments without an open tool index");
+                    return Ok(None);
+                };
+                if let Some(args) = state.tool_args.get_mut(*index as usize) {
                     args.push_str(delta);
                 }
-                let index = state.tool_count.saturating_sub(1);
                 chunk(
                     state,
                     &format!(
-                        "{{\"tool_calls\":[{{\"index\":{index},\"function\":{{\"arguments\":{}}}}}]}}",
+                        "{{\"tool_calls\":[{{\"index\":{slot},\"function\":{{\"arguments\":{}}}}}]}}",
                         jstr(delta)
                     ),
                     "null",
                 )
             }
-            StreamEvent::ToolEnd { .. } => {
+            StreamEvent::ToolEnd { index } => {
                 // An empty argument list still has to parse as JSON on the
                 // client side (spec 40 §3.4).
                 let mut out = Vec::new();
-                if state
-                    .tool_arguments
-                    .last()
-                    .is_some_and(|args| args.is_empty())
-                {
-                    let index = state.tool_count.saturating_sub(1);
-                    out.extend(chunk(
-                        state,
-                        &format!(
-                            "{{\"tool_calls\":[{{\"index\":{index},\"function\":{{\"arguments\":\"{{}}\"}}}}]}}"
-                        ),
-                        "null",
-                    ));
+                if let Some(slot) = state.tool_slot(*index) {
+                    if state
+                        .tool_args
+                        .get(*index as usize)
+                        .is_some_and(String::is_empty)
+                    {
+                        out.extend(chunk(
+                            state,
+                            &format!(
+                                "{{\"tool_calls\":[{{\"index\":{slot},\"function\":{{\"arguments\":\"{{}}\"}}}}]}}"
+                            ),
+                            "null",
+                        ));
+                    }
+                    state.close_tool(*index);
                 }
                 out
             }
@@ -739,9 +764,13 @@ fn usage_chunk(state: &SseState) -> Vec<u8> {
 }
 
 #[cfg(test)]
+// The provider is a request-scoped const value; tests call it directly.
+#[allow(clippy::borrow_interior_mutable_const)]
 mod tests {
     use super::*;
     use crate::neutral::BlockKind;
+    use crate::provider::google::GoogleProvider;
+    use crate::provider::ProviderEncoder;
 
     fn decode(body: Value) -> NeutralRequest {
         ChatDecoder.decode(&body).unwrap()
@@ -1269,5 +1298,172 @@ mod tests {
         assert!(frames[0].contains(r#""delta":{"role":"assistant"}"#));
         assert!(frames[1].contains(r#""delta":{"reasoning_content":"hmm"}"#));
         assert!(!frames[1].contains("\"thinking\""));
+    }
+
+    #[test]
+    fn signature_and_image_tool_result_round_trip() {
+        let signed = decode(serde_json::json!({
+            "model": "gemini-4-argon",
+            "messages": [
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": {"name": "Read", "arguments": "{}"},
+                    "extra_content": {"google": {"thought_signature": "sig-1"}}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": [{
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,QUJD"}
+                }]}
+            ]
+        }));
+        let call = match &signed.messages[0].parts[0] {
+            ContentBlock::ToolUse(call) => call,
+            other => panic!("expected tool use, got {other:?}"),
+        };
+        assert_eq!(call.signature.as_deref(), Some("sig-1"));
+        let encoded = String::from_utf8(
+            GoogleProvider
+                .encode_request(
+                    &signed,
+                    &crate::catalog::Catalog::builtin()
+                        .unwrap()
+                        .capabilities("gemini-4-argon")
+                        .unwrap(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            encoded.contains(r#""thoughtSignature":"sig-1""#),
+            "{encoded}"
+        );
+        assert!(encoded.contains(
+            r#"{"functionResponse":{"name":"Read","response":{"result":{"image_ref":{"$ref":"tool_image_0.png"}}},"parts":[{"inlineData":{"displayName":"tool_image_0.png","mimeType":"image/png","data":"QUJD"}}]}}"#
+        ), "{encoded}");
+
+        let mut response = NeutralResponse::default();
+        response.tool_calls.push(call.clone());
+        let json =
+            String::from_utf8(ChatEncoder.encode_response(&response, "m", 0).unwrap()).unwrap();
+        assert!(
+            json.contains(r#""extra_content":{"google":{"thought_signature":"sig-1"}}"#),
+            "{json}"
+        );
+        let mut state = SseState::new("m", 0);
+        let stream = ChatEncoder
+            .encode_event(
+                &StreamEvent::ToolStart {
+                    index: 0,
+                    id: signed_tool_start_id("call_1", "sig-1"),
+                    name: "Read".to_string(),
+                    custom: false,
+                },
+                &mut state,
+            )
+            .unwrap()
+            .unwrap();
+        let frames = frame_texts(&stream);
+        assert!(frames[1].contains(r#""id":"call_1""#), "{frames:?}");
+        assert!(
+            frames[1].contains(r#""extra_content":{"google":{"thought_signature":"sig-1"}}"#),
+            "{frames:?}"
+        );
+    }
+
+    #[test]
+    fn object_tool_result_is_a_json_value_in_google_request() {
+        let request = decode(serde_json::json!({
+            "model": "gemini-4-argon",
+            "messages": [
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1", "type": "function",
+                    "function": {"name": "Read", "arguments": "{}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1",
+                 "content": [{"type": "json", "value": {"rows": [1, 2]}}]}
+            ]
+        }));
+        let body = String::from_utf8(
+            GoogleProvider
+                .encode_request(
+                    &request,
+                    &crate::catalog::Catalog::builtin()
+                        .unwrap()
+                        .capabilities("gemini-4-argon")
+                        .unwrap(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            body.contains(
+                r#"{"functionResponse":{"name":"Read","response":{"result":{"rows":[1,2]}}}}"#
+            ),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn interleaved_tool_arguments_stay_on_their_own_index() {
+        let mut state = SseState::new("m", 0);
+        let mut frames = Vec::new();
+        for event in [
+            StreamEvent::ToolStart {
+                index: 0,
+                id: "call_1".to_string(),
+                name: "Read".to_string(),
+                custom: false,
+            },
+            StreamEvent::ToolStart {
+                index: 1,
+                id: "call_2".to_string(),
+                name: "Write".to_string(),
+                custom: false,
+            },
+            StreamEvent::ToolArgsDelta {
+                index: 0,
+                delta: "{\"path\":".to_string(),
+            },
+            StreamEvent::ToolArgsDelta {
+                index: 1,
+                delta: "{\"text\":".to_string(),
+            },
+            StreamEvent::ToolArgsDelta {
+                index: 0,
+                delta: "\"a\"}".to_string(),
+            },
+            StreamEvent::ToolArgsDelta {
+                index: 1,
+                delta: "\"b\"}".to_string(),
+            },
+            StreamEvent::ToolEnd { index: 0 },
+            StreamEvent::ToolEnd { index: 1 },
+        ] {
+            if let Some(frame) = ChatEncoder.encode_event(&event, &mut state).unwrap() {
+                frames.extend(frame_texts(&frame));
+            }
+        }
+        // Four argument deltas land on 0, 1, 0, 1 in that order; the two
+        // tool-start frames are filtered out by the absence of an id.
+        let deltas: Vec<&str> = frames
+            .iter()
+            .map(|frame| data_of(frame))
+            .filter(|body| body.contains("arguments") && !body.contains("\"id\":\"call_"))
+            .collect();
+        assert_eq!(deltas.len(), 4, "{deltas:?}");
+        for (body, (index, fragment)) in deltas.iter().zip([
+            (0, r#""{\"path\":""#),
+            (1, r#""{\"text\":""#),
+            (0, r#""\"a\"}""#),
+            (1, r#""\"b\"}""#),
+        ]) {
+            assert!(body.contains(&format!("\"index\":{index}")), "{body}");
+            assert!(
+                body.contains(&format!("\"arguments\":{fragment}")),
+                "{body}"
+            );
+        }
+        assert_eq!(state.tool_args[0], "{\"path\":\"a\"}");
+        assert_eq!(state.tool_args[1], "{\"text\":\"b\"}");
     }
 }

@@ -20,8 +20,14 @@
 
 use serde_json::{Map, Value};
 
-use crate::catalog::Catalog;
+use crate::catalog::{Catalog, Provider};
 use crate::error::GatewayError;
+#[cfg(test)]
+use crate::neutral::content::signed_tool_start_id;
+use crate::neutral::content::{
+    decode_tool_output, first_signature, split_signed_tool_start_id, tool_result_content_block,
+    tool_result_text,
+};
 use crate::neutral::{
     ContentBlock, ImageSource, Message, NeutralRequest, NeutralResponse, Reasoning, Role,
     StopReason, StreamEvent, SystemBlock, ToolChoice, ToolDef, ToolResult, ToolUse, Usage,
@@ -185,31 +191,6 @@ fn system_text(value: Option<&Value>) -> String {
     }
 }
 
-/// Tool result text: a string, or the text blocks of an array (spec 42 §1.2).
-fn tool_output_text(value: Option<&Value>) -> String {
-    match value {
-        Some(Value::String(text)) => text.clone(),
-        Some(Value::Array(items)) => items
-            .iter()
-            .filter_map(|item| {
-                let object = item.as_object()?;
-                match object.get("type").and_then(Value::as_str) {
-                    Some("input_text") | Some("output_text") | Some("text") => {
-                        object.get("text").and_then(Value::as_str)
-                    }
-                    _ => None,
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n"),
-        Some(_) => {
-            warn("tool output is not a string or array; using an empty string");
-            String::new()
-        }
-        None => String::new(),
-    }
-}
-
 /// `arguments` text for a function call (spec 42 §1.2): non-object JSON becomes
 /// `{}`, and the original text is logged for diagnosis.
 fn decode_arguments(value: Option<&Value>) -> String {
@@ -264,35 +245,51 @@ fn decode_call(object: &Map<String, Value>, custom: bool) -> Option<ToolUse> {
         id,
         name: name.to_string(),
         arguments,
-        signature: None,
+        signature: first_signature(object, &[&["thought_signature"], &["thoughtSignature"]]),
         // Keep the free-form shape on the way back to the upstream.
         custom,
     })
 }
 
 /// A `function_call_output` / `custom_tool_call_output` input item.
-fn decode_result(object: &Map<String, Value>, custom: bool) -> Option<ToolResult> {
+fn decode_result_blocks(
+    object: &Map<String, Value>,
+    custom: bool,
+    structured: bool,
+) -> Vec<ContentBlock> {
     let id = object
         .get("call_id")
         .and_then(Value::as_str)
         .unwrap_or_default();
     if id.is_empty() {
         warn("dropped tool output without call_id");
-        return None;
+        return Vec::new();
     }
-    Some(ToolResult {
+    let blocks = decode_tool_output(object.get("output"));
+    let mut parts = vec![ContentBlock::ToolResult(ToolResult {
         tool_use_id: id.to_string(),
-        output: tool_output_text(object.get("output")),
+        output: tool_result_text(&blocks),
         is_error: false,
         custom,
-    })
+    })];
+    if structured
+        && blocks.iter().any(|block| {
+            matches!(
+                block.get("type").and_then(Value::as_str),
+                Some("image" | "json")
+            )
+        })
+    {
+        parts.push(tool_result_content_block(id, blocks));
+    }
+    parts
 }
 
-fn flush_pending(pending: &mut Vec<ToolResult>, messages: &mut Vec<Message>) {
+fn flush_pending(pending: &mut Vec<ContentBlock>, messages: &mut Vec<Message>) {
     if pending.is_empty() {
         return;
     }
-    let parts = pending.drain(..).map(ContentBlock::ToolResult).collect();
+    let parts = std::mem::take(pending);
     messages.push(Message {
         role: Role::User,
         parts,
@@ -314,7 +311,7 @@ fn decode_message_item(
     object: &Map<String, Value>,
     system: &mut Vec<SystemBlock>,
     messages: &mut Vec<Message>,
-    pending: &mut Vec<ToolResult>,
+    pending: &mut Vec<ContentBlock>,
 ) {
     match object.get("role").and_then(Value::as_str) {
         Some("user") => {
@@ -388,6 +385,7 @@ fn decode_tools(value: Option<&Value>) -> Vec<ToolDef> {
                     strict: object.get("strict").and_then(Value::as_bool),
                     cache_control: None,
                     format: None,
+                    custom: false,
                 });
             }
             Some("custom") => {
@@ -406,6 +404,7 @@ fn decode_tools(value: Option<&Value>) -> Vec<ToolDef> {
                     strict: None,
                     cache_control: None,
                     format: object.get("format").cloned(),
+                    custom: true,
                 });
             }
             Some("namespace") => warn("dropped namespace tool (not mapped in this round)"),
@@ -509,7 +508,7 @@ impl ClientDecoder for ResponsesDecoder {
         }
 
         let mut messages: Vec<Message> = Vec::new();
-        let mut pending_results: Vec<ToolResult> = Vec::new();
+        let mut pending_results: Vec<ContentBlock> = Vec::new();
         let mut additional: Vec<ToolDef> = Vec::new();
 
         match body.get("input") {
@@ -562,9 +561,11 @@ impl ClientDecoder for ResponsesDecoder {
                         }
                         Some("function_call_output") | Some("custom_tool_call_output") => {
                             let custom = kind == Some("custom_tool_call_output");
-                            if let Some(result) = decode_result(object, custom) {
-                                pending_results.push(result);
-                            }
+                            pending_results.extend(decode_result_blocks(
+                                object,
+                                custom,
+                                provider == Provider::Google,
+                            ));
                         }
                         Some("reasoning") => {
                             if !reasoning_dropped {
@@ -703,21 +704,41 @@ fn message_item(index: u64, text: &str) -> String {
     )
 }
 
-fn function_call_item(item_id: &str, call_id: &str, name: &str, arguments: &str) -> String {
+fn signature_field(signature: Option<&str>) -> String {
+    signature
+        .map(|value| format!(",\"thought_signature\":{}", jstr(value)))
+        .unwrap_or_default()
+}
+
+fn function_call_item(
+    item_id: &str,
+    call_id: &str,
+    name: &str,
+    arguments: &str,
+    signature: Option<&str>,
+) -> String {
     format!(
-        "{{\"id\":{},\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":{},\"name\":{},\"arguments\":{}}}",
+        "{{\"id\":{},\"type\":\"function_call\",\"status\":\"completed\",\"call_id\":{}{},\"name\":{},\"arguments\":{}}}",
         jstr(item_id),
         jstr(call_id),
+        signature_field(signature),
         jstr(name),
         jstr(arguments)
     )
 }
 
-fn custom_tool_call_item(item_id: &str, call_id: &str, name: &str, input: &str) -> String {
+fn custom_tool_call_item(
+    item_id: &str,
+    call_id: &str,
+    name: &str,
+    input: &str,
+    signature: Option<&str>,
+) -> String {
     format!(
-        "{{\"id\":{},\"type\":\"custom_tool_call\",\"status\":\"completed\",\"call_id\":{},\"name\":{},\"input\":{}}}",
+        "{{\"id\":{},\"type\":\"custom_tool_call\",\"status\":\"completed\",\"call_id\":{}{},\"name\":{},\"input\":{}}}",
         jstr(item_id),
         jstr(call_id),
+        signature_field(signature),
         jstr(name),
         jstr(input)
     )
@@ -752,6 +773,7 @@ fn output_items(response: &NeutralResponse) -> Vec<String> {
                 &call.id,
                 &call.name,
                 &custom_input(&call.arguments),
+                call.signature.as_deref(),
             ));
         } else {
             items.push(function_call_item(
@@ -759,6 +781,7 @@ fn output_items(response: &NeutralResponse) -> Vec<String> {
                 &call.id,
                 &call.name,
                 &call.arguments,
+                call.signature.as_deref(),
             ));
         }
     }
@@ -809,7 +832,7 @@ impl ClientEncoder for ResponsesEncoder {
                     open_message(state, &mut out);
                 }
                 state.text.push_str(delta);
-                let index = state.next_block_index.saturating_sub(1);
+                let index = state.open_item_index.unwrap_or_default();
                 let item_id = format!("msg_{index}");
                 out.extend(event_frame(
                     state,
@@ -827,7 +850,7 @@ impl ClientEncoder for ResponsesEncoder {
                     open_reasoning(state, &mut out);
                 }
                 state.thinking.push_str(delta);
-                let index = state.next_block_index.saturating_sub(1);
+                let index = state.open_item_index.unwrap_or_default();
                 let item_id = format!("rs_{index}");
                 out.extend(event_frame(
                     state,
@@ -840,37 +863,50 @@ impl ClientEncoder for ResponsesEncoder {
                 ));
             }
             StreamEvent::ToolStart {
-                id, name, custom, ..
+                index,
+                id,
+                name,
+                custom,
             } => {
+                let (id, signature) = split_signed_tool_start_id(id);
                 ensure_started(state, &mut out);
-                open_tool(state, &mut out, id, name, *custom);
-                state.tool_count += 1;
+                open_tool(state, &mut out, *index, id, name, *custom, signature);
+                state.tool_count = state.tool_count.max(*index + 1);
             }
-            StreamEvent::ToolArgsDelta { delta, .. } => {
-                if state.open_block == Some(ITEM_TOOL) {
-                    state.text.push_str(delta);
-                    let index = state.next_block_index.saturating_sub(1);
-                    let item_id = tool_item_id(state, index);
-                    let event = if tool_is_custom(state, index) {
-                        "response.custom_tool_call_input.delta"
-                    } else {
-                        "response.function_call_arguments.delta"
-                    };
-                    out.extend(event_frame(
-                        state,
-                        event,
-                        format!(
-                            "{{\"type\":\"{event}\",\"item_id\":{},\"output_index\":{index},\"delta\":{}}}",
-                            jstr(&item_id),
-                            jstr(delta)
-                        ),
-                    ));
+            StreamEvent::ToolArgsDelta { index, delta } => {
+                let Some(output_index) = state.tool_slot(*index) else {
+                    warn("dropped tool arguments without an open tool index");
+                    return Ok(None);
+                };
+                if let Some(args) = state.tool_args.get_mut(*index as usize) {
+                    args.push_str(delta);
                 }
+                let item_id = tool_item_id(state, output_index);
+                let event = if state
+                    .tool_custom
+                    .get(*index as usize)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    "response.custom_tool_call_input.delta"
+                } else {
+                    "response.function_call_arguments.delta"
+                };
+                out.extend(event_frame(
+                    state,
+                    event,
+                    format!(
+                        "{{\"type\":\"{event}\",\"item_id\":{},\"output_index\":{output_index},\"delta\":{}}}",
+                        jstr(&item_id),
+                        jstr(delta)
+                    ),
+                ));
             }
-            StreamEvent::ToolEnd { .. } => {
-                if state.open_block == Some(ITEM_TOOL) {
-                    close_tool(state, &mut out);
-                    state.open_block = None;
+            StreamEvent::ToolEnd { index } => {
+                if state.tool_slot(*index).is_some() {
+                    close_tool(state, &mut out, *index);
+                } else {
+                    warn("dropped tool end without an open tool index");
                 }
             }
             StreamEvent::Usage(usage) => state.usage = *usage,
@@ -878,6 +914,9 @@ impl ClientEncoder for ResponsesEncoder {
                 state.stop_reason = *reason;
                 ensure_started(state, &mut out);
                 close_item(state, &mut out);
+                for index in state.open_tool_indices() {
+                    close_tool(state, &mut out, index);
+                }
                 emit_completed(state, &mut out);
             }
             StreamEvent::Error(err) => {
@@ -952,8 +991,9 @@ fn open_message(state: &mut SseState, out: &mut Vec<u8>) {
     let index = state.next_block_index;
     state.next_block_index += 1;
     state.open_block = Some(ITEM_MESSAGE);
+    state.open_item_index = Some(index);
     state.text.clear();
-    state.tool_arguments.push(String::new());
+    state.set_tool_argument(index, String::new());
     let item_id = format!("msg_{index}");
     out.extend(event_frame(
         state,
@@ -974,7 +1014,7 @@ fn open_message(state: &mut SseState, out: &mut Vec<u8>) {
 }
 
 fn close_message(state: &mut SseState, out: &mut Vec<u8>) {
-    let index = state.next_block_index.saturating_sub(1);
+    let index = state.open_item_index.unwrap_or_default();
     let item_id = format!("msg_{index}");
     let text = std::mem::take(&mut state.text);
     out.extend(event_frame(
@@ -1011,8 +1051,9 @@ fn open_reasoning(state: &mut SseState, out: &mut Vec<u8>) {
     let index = state.next_block_index;
     state.next_block_index += 1;
     state.open_block = Some(ITEM_REASONING);
+    state.open_item_index = Some(index);
     state.thinking.clear();
-    state.tool_arguments.push(String::new());
+    state.set_tool_argument(index, String::new());
     let item_id = format!("rs_{index}");
     out.extend(event_frame(
         state,
@@ -1033,7 +1074,7 @@ fn open_reasoning(state: &mut SseState, out: &mut Vec<u8>) {
 }
 
 fn close_reasoning(state: &mut SseState, out: &mut Vec<u8>) {
-    let index = state.next_block_index.saturating_sub(1);
+    let index = state.open_item_index.unwrap_or_default();
     let item_id = format!("rs_{index}");
     let text = std::mem::take(&mut state.thinking);
     out.extend(event_frame(
@@ -1079,23 +1120,27 @@ fn tool_item_id(state: &SseState, index: u64) -> String {
         .to_string()
 }
 
-/// True when the open tool at `index` is a custom (free-form) call; the
-/// upstream marks it in the metadata `open_tool` stored there (spec 42 §3.2).
-fn tool_is_custom(state: &SseState, index: u64) -> bool {
-    state
-        .tool_arguments
-        .get(index as usize)
-        .and_then(|meta| serde_json::from_str::<Value>(meta).ok())
-        .and_then(|parsed| parsed.get("custom").and_then(Value::as_bool))
-        .unwrap_or(false)
-}
-
-fn open_tool(state: &mut SseState, out: &mut Vec<u8>, id: &str, name: &str, custom: bool) {
-    close_item(state, out);
+fn open_tool(
+    state: &mut SseState,
+    out: &mut Vec<u8>,
+    neutral_index: u64,
+    id: &str,
+    name: &str,
+    custom: bool,
+    signature: Option<&str>,
+) {
+    // Opening a second tool must not close one still receiving arguments
+    // (spec 42 §3.3.1). Only a message/reasoning item is single-open.
+    if state.open_block != Some(ITEM_TOOL) {
+        close_item(state, out);
+    }
     let index = state.next_block_index;
     state.next_block_index += 1;
+    if !state.ensure_tool(neutral_index, index, custom) {
+        warn("dropped tool start with out-of-range index");
+        return;
+    }
     state.open_block = Some(ITEM_TOOL);
-    state.text.clear();
     let call_id = tool_call_id(if id.is_empty() { None } else { Some(id) });
     let prefix = if custom { "ctc_" } else { "fc_" };
     let item_id = format!("{prefix}{call_id}");
@@ -1105,17 +1150,18 @@ fn open_tool(state: &mut SseState, out: &mut Vec<u8>, id: &str, name: &str, cust
         jstr(name),
         jstr(&call_id)
     );
-    state.tool_arguments.push(meta);
+    state.set_tool_argument(index, meta);
+    let signature = signature_field(signature);
     let item = if custom {
         format!(
-            "{{\"id\":{},\"type\":\"custom_tool_call\",\"status\":\"in_progress\",\"call_id\":{},\"name\":{},\"input\":\"\"}}",
+            "{{\"id\":{},\"type\":\"custom_tool_call\",\"status\":\"in_progress\",\"call_id\":{}{signature},\"name\":{},\"input\":\"\"}}",
             jstr(&item_id),
             jstr(&call_id),
             jstr(name)
         )
     } else {
         format!(
-            "{{\"id\":{},\"type\":\"function_call\",\"status\":\"in_progress\",\"call_id\":{},\"name\":{},\"arguments\":\"\"}}",
+            "{{\"id\":{},\"type\":\"function_call\",\"status\":\"in_progress\",\"call_id\":{}{signature},\"name\":{},\"arguments\":\"\"}}",
             jstr(&item_id),
             jstr(&call_id),
             jstr(name)
@@ -1130,12 +1176,20 @@ fn open_tool(state: &mut SseState, out: &mut Vec<u8>, id: &str, name: &str, cust
     ));
 }
 
-fn close_tool(state: &mut SseState, out: &mut Vec<u8>) {
-    let index = state.next_block_index.saturating_sub(1);
-    let meta = match state.tool_arguments.get_mut(index as usize) {
-        Some(slot) => std::mem::take(slot),
-        None => String::new(),
+fn close_tool(state: &mut SseState, out: &mut Vec<u8>, neutral_index: u64) {
+    let Some(index) = state.tool_slot(neutral_index) else {
+        return;
     };
+    let meta = state
+        .tool_arguments
+        .get(index as usize)
+        .cloned()
+        .unwrap_or_default();
+    let custom = state
+        .tool_custom
+        .get(neutral_index as usize)
+        .copied()
+        .unwrap_or(false);
     let parsed: Value = serde_json::from_str(&meta).unwrap_or(Value::Null);
     let item_id = parsed
         .get("item_id")
@@ -1152,11 +1206,11 @@ fn close_tool(state: &mut SseState, out: &mut Vec<u8>) {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    let custom = parsed
-        .get("custom")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let mut arguments = std::mem::take(&mut state.text);
+    let mut arguments = state
+        .tool_args
+        .get(neutral_index as usize)
+        .cloned()
+        .unwrap_or_default();
     if arguments.is_empty() && !custom {
         // A tool called without arguments must still carry parseable JSON
         // (spec 45 §4.4).
@@ -1182,7 +1236,7 @@ fn close_tool(state: &mut SseState, out: &mut Vec<u8>) {
                 jstr(&arguments)
             ),
         ));
-        let item = custom_tool_call_item(&item_id, &call_id, &name, &arguments);
+        let item = custom_tool_call_item(&item_id, &call_id, &name, &arguments, None);
         out.extend(event_frame(
             state,
             "response.output_item.done",
@@ -1190,7 +1244,8 @@ fn close_tool(state: &mut SseState, out: &mut Vec<u8>) {
                 "{{\"type\":\"response.output_item.done\",\"output_index\":{index},\"item\":{item}}}"
             ),
         ));
-        state.tool_arguments[index as usize] = item;
+        state.set_tool_argument(index, item);
+        state.close_tool(neutral_index);
         return;
     }
     out.extend(event_frame(
@@ -1202,7 +1257,7 @@ fn close_tool(state: &mut SseState, out: &mut Vec<u8>) {
             jstr(&arguments)
         ),
     ));
-    let item = function_call_item(&item_id, &call_id, &name, &arguments);
+    let item = function_call_item(&item_id, &call_id, &name, &arguments, None);
     out.extend(event_frame(
         state,
         "response.output_item.done",
@@ -1210,7 +1265,8 @@ fn close_tool(state: &mut SseState, out: &mut Vec<u8>) {
             "{{\"type\":\"response.output_item.done\",\"output_index\":{index},\"item\":{item}}}"
         ),
     ));
-    state.tool_arguments[index as usize] = item;
+    state.set_tool_argument(index, item);
+    state.close_tool(neutral_index);
 }
 
 fn close_item(state: &mut SseState, out: &mut Vec<u8>) {
@@ -1224,7 +1280,9 @@ fn close_item(state: &mut SseState, out: &mut Vec<u8>) {
             state.open_block = None;
         }
         Some(ITEM_TOOL) => {
-            close_tool(state, out);
+            for index in state.open_tool_indices() {
+                close_tool(state, out, index);
+            }
             state.open_block = None;
         }
         _ => {}
@@ -1277,9 +1335,10 @@ fn failed_frame(state: &SseState, err: &GatewayError) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+// The provider is a request-scoped const value; tests call it directly.
+#[allow(clippy::borrow_interior_mutable_const)]
 mod tests {
     use super::*;
-    use crate::catalog::Provider;
 
     fn decode(body: Value) -> NeutralRequest {
         ResponsesDecoder.decode(&body).expect("request decodes")
@@ -2032,6 +2091,106 @@ mod tests {
     }
 
     #[test]
+    fn signature_and_image_tool_result_round_trip() {
+        use crate::provider::google::GoogleProvider;
+        use crate::provider::ProviderEncoder;
+
+        let signed = decode(serde_json::json!({
+            "model": "gemini-4-argon",
+            "input": [
+                {"type": "function_call", "call_id": "call_1", "name": "Read", "arguments": "{}", "thought_signature": "sig-1"},
+                {"type": "function_call_output", "call_id": "call_1", "output": [
+                    {"type": "input_image", "image_url": "data:image/png;base64,QUJD"}
+                ]}
+            ]
+        }));
+        let call = match &signed.messages[0].parts[0] {
+            ContentBlock::ToolUse(call) => call,
+            other => panic!("expected tool use, got {other:?}"),
+        };
+        assert_eq!(call.signature.as_deref(), Some("sig-1"));
+        let encoded = String::from_utf8(
+            GoogleProvider
+                .encode_request(
+                    &signed,
+                    &crate::catalog::Catalog::builtin()
+                        .unwrap()
+                        .capabilities("gemini-4-argon")
+                        .unwrap(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            encoded.contains(r#""thoughtSignature":"sig-1""#),
+            "{encoded}"
+        );
+        assert!(
+            encoded.contains(r#""displayName":"tool_image_0.png""#),
+            "{encoded}"
+        );
+        let mut response = NeutralResponse::default();
+        response.tool_calls.push(call.clone());
+        let json = String::from_utf8(ResponsesEncoder.encode_response(&response, "m", 0).unwrap())
+            .unwrap();
+        assert!(json.contains(r#""thought_signature":"sig-1""#), "{json}");
+        let mut state = SseState::new("m", 0);
+        let got = run(
+            &[StreamEvent::ToolStart {
+                index: 0,
+                id: signed_tool_start_id("call_1", "sig-1"),
+                name: "Read".to_string(),
+                custom: false,
+            }],
+            &mut state,
+        );
+        let added = got
+            .iter()
+            .find(|(event, _)| event == "response.output_item.added")
+            .unwrap();
+        assert!(
+            added
+                .1
+                .contains(r#""call_id":"call_1","thought_signature":"sig-1""#),
+            "{added:?}"
+        );
+    }
+
+    #[test]
+    fn object_tool_result_is_a_json_value_in_google_request() {
+        use crate::provider::google::GoogleProvider;
+        use crate::provider::ProviderEncoder;
+
+        let request = decode(serde_json::json!({
+            "model": "gemini-4-argon",
+            "input": [
+                {"type": "function_call", "call_id": "call_1", "name": "Read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "call_1", "output": [
+                    {"type": "json", "value": {"rows": [1, 2]}}
+                ]}
+            ]
+        }));
+        let body = String::from_utf8(
+            GoogleProvider
+                .encode_request(
+                    &request,
+                    &crate::catalog::Catalog::builtin()
+                        .unwrap()
+                        .capabilities("gemini-4-argon")
+                        .unwrap(),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            body.contains(
+                r#"{"functionResponse":{"name":"Read","response":{"result":{"rows":[1,2]}}}}"#
+            ),
+            "{body}"
+        );
+    }
+
+    #[test]
     fn truncated_stream_reports_incomplete() {
         let mut state = SseState::new("gpt-5.6-sol", 1);
         let got = run(
@@ -2052,6 +2211,172 @@ mod tests {
                 r#""status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}"#
             ),
             "{data}"
+        );
+    }
+
+    #[test]
+    fn interleaved_tool_arguments_stay_on_their_own_output_index() {
+        let mut state = SseState::new("m", 0);
+        let got = run(
+            &[
+                StreamEvent::ToolStart {
+                    index: 0,
+                    id: "call_1".to_string(),
+                    name: "Read".to_string(),
+                    custom: false,
+                },
+                StreamEvent::ToolStart {
+                    index: 1,
+                    id: "call_2".to_string(),
+                    name: "Write".to_string(),
+                    custom: false,
+                },
+                StreamEvent::ToolArgsDelta {
+                    index: 0,
+                    delta: "{\"path\":".to_string(),
+                },
+                StreamEvent::ToolArgsDelta {
+                    index: 1,
+                    delta: "{\"text\":".to_string(),
+                },
+                StreamEvent::ToolArgsDelta {
+                    index: 0,
+                    delta: "\"a\"}".to_string(),
+                },
+                StreamEvent::ToolArgsDelta {
+                    index: 1,
+                    delta: "\"b\"}".to_string(),
+                },
+                StreamEvent::ToolEnd { index: 0 },
+                StreamEvent::ToolEnd { index: 1 },
+                StreamEvent::End {
+                    reason: StopReason::ToolCalls,
+                },
+            ],
+            &mut state,
+        );
+        let deltas: Vec<&str> = got
+            .iter()
+            .filter(|(event, _)| event == "response.function_call_arguments.delta")
+            .map(|(_, data)| data.as_str())
+            .collect();
+        assert_eq!(deltas.len(), 4, "{deltas:?}");
+        for (data, (index, item_id, fragment)) in deltas.iter().zip([
+            (0, "fc_call_1", r#""{\"path\":""#),
+            (1, "fc_call_2", r#""{\"text\":""#),
+            (0, "fc_call_1", r#""\"a\"}""#),
+            (1, "fc_call_2", r#""\"b\"}""#),
+        ]) {
+            assert!(
+                data.contains(&format!("\"output_index\":{index}")),
+                "{data}"
+            );
+            assert!(
+                data.contains(&format!("\"item_id\":\"{item_id}\"")),
+                "{data}"
+            );
+            assert!(data.contains(&format!("\"delta\":{fragment}")), "{data}");
+        }
+        assert_eq!(state.tool_args[0], "{\"path\":\"a\"}");
+        assert_eq!(state.tool_args[1], "{\"text\":\"b\"}");
+        let done: Vec<&str> = got
+            .iter()
+            .filter(|(event, _)| event == "response.function_call_arguments.done")
+            .map(|(_, data)| data.as_str())
+            .collect();
+        assert_eq!(done.len(), 2, "{done:?}");
+        assert!(
+            done[0].contains(r#""arguments":"{\"path\":\"a\"}""#),
+            "{}",
+            done[0]
+        );
+        assert!(
+            done[1].contains(r#""arguments":"{\"text\":\"b\"}""#),
+            "{}",
+            done[1]
+        );
+    }
+
+    #[test]
+    fn custom_tool_round_trips_from_claude_to_responses_output() {
+        use crate::provider::anthropic::AnthropicProvider;
+        use crate::provider::ProviderEncoder;
+
+        // One Responses request declares a free-form tool with a grammar.
+        let request = decode(serde_json::json!({
+            "model": "claude-sonnet-5",
+            "tools": [{
+                "type": "custom",
+                "name": "apply_patch",
+                "description": "Patch files",
+                "format": {"type": "grammar"}
+            }]
+        }));
+        assert!(request.tools[0].custom);
+        let provider: Box<dyn ProviderEncoder> = Box::new(AnthropicProvider);
+        let caps = crate::catalog::Catalog::builtin()
+            .unwrap()
+            .capabilities("claude-sonnet-5")
+            .unwrap();
+        let upstream_request =
+            String::from_utf8(provider.encode_request(&request, &caps).unwrap()).unwrap();
+        assert!(
+            upstream_request.contains(r#""input_schema":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}"#),
+            "{upstream_request}"
+        );
+
+        let upstream = concat!(
+            r#"{"type":"message_start","message":{"id":"msg_x","type":"message","role":"assistant","model":"claude-sonnet-5","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}"#,
+            "\n",
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"call_1","name":"apply_patch","input":{}}}"#,
+            "\n",
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"input\":\"*** Begin Patch\"}"}}"#,
+            "\n",
+            r#"{"type":"content_block_stop","index":0}"#,
+            "\n",
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":3}}"#,
+            "\n",
+            r#"{"type":"message_stop"}"#,
+            "\n",
+        );
+        let reduced = provider.decode_response(upstream.as_bytes()).unwrap();
+        let body = String::from_utf8(
+            ResponsesEncoder
+                .encode_response(&reduced, "claude-sonnet-5", 1)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            body.contains(r#"{"id":"ctc_call_1","type":"custom_tool_call","status":"completed","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch"}"#),
+            "{body}"
+        );
+        assert!(!body.contains(r#""type":"function_call""#), "{body}");
+
+        let mut stream = provider.stream_decoder();
+        let mut events = Vec::new();
+        for line in upstream.split('\n') {
+            events.extend(stream.push_line(line).unwrap());
+        }
+        events.extend(stream.finish().unwrap());
+        let mut state = SseState::new("claude-sonnet-5", 1);
+        let frames = run(&events, &mut state);
+        let names: Vec<&str> = frames.iter().map(|(event, _)| event.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "response.created",
+                "response.in_progress",
+                "response.output_item.added",
+                "response.custom_tool_call_input.delta",
+                "response.custom_tool_call_input.done",
+                "response.output_item.done",
+                "response.completed",
+            ]
+        );
+        assert!(
+            frames[3].1.contains(r#""delta":"*** Begin Patch""#),
+            "{}",
+            frames[3].1
         );
     }
 }

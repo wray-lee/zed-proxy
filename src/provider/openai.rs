@@ -1,10 +1,7 @@
 //! `open_ai` provider: neutral request → OpenAI Responses payload, and
 //! Responses events → neutral events (spec `20-provider-openai.md`).
-//!
-//! Implementation task owns this file. The interface below is fixed and must not
-//! change; only the bodies are filled in.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
 
@@ -510,13 +507,19 @@ fn tool_items(tools: &[ToolDef], native: bool, named: Option<&str>) -> Vec<Strin
                 continue;
             }
         }
-        if let Some(format) = &tool.format {
+        if tool.custom {
             if native {
+                // `format` is optional: unconstrained text declares no grammar
+                // and must still go out as a native `custom` tool (42 §1.5A).
+                let format = tool
+                    .format
+                    .as_ref()
+                    .map(|format| format!(",\"format\":{}", json_value(format)))
+                    .unwrap_or_default();
                 items.push(format!(
-                    "{{\"type\":\"custom\",\"name\":{},\"description\":{},\"format\":{}}}",
+                    "{{\"type\":\"custom\",\"name\":{},\"description\":{}{format}}}",
                     json_str(&tool.name),
-                    json_str(&tool.description),
-                    json_value(format)
+                    json_str(&tool.description)
                 ));
             } else {
                 items.push(function_tool(tool));
@@ -591,6 +594,27 @@ fn reasoning_json(
     Some(out)
 }
 
+/// Upstream identifiers that all resolve to one local tool index (spec 45
+/// §4.4A): the `item_id` seen in `output_item.added`, its `output_index`,
+/// and the `id` / `call_id` of the item itself.
+fn upstream_aliases(event: &Value, item: &Value) -> Vec<String> {
+    let mut keys = Vec::new();
+    if let Some(item_id) = event
+        .get("item_id")
+        .and_then(Value::as_str)
+        .or_else(|| item.get("id").and_then(Value::as_str))
+    {
+        keys.push(item_id.to_string());
+    }
+    if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+        keys.push(format!("call:{call_id}"));
+    }
+    if let Some(output_index) = event.get("output_index").and_then(Value::as_u64) {
+        keys.push(format!("index:{output_index}"));
+    }
+    keys
+}
+
 /// Streaming half: Responses events → neutral events (spec 20 §13), with the
 /// same state machine the non-streaming path reduces through (spec 20 §12).
 #[derive(Default)]
@@ -605,8 +629,16 @@ pub struct ResponsesDecoder {
     envelope_thinking: Option<String>,
     /// Tool calls discovered through `output_item.added`.
     tools: Vec<ToolUse>,
-    /// Index of the open tool call, if any.
-    open_tool: Option<usize>,
+    /// Upstream `item_id` / `output_index` → local neutral tool index
+    /// (spec 45 §4.4A). A new item never closes another open item.
+    tool_by_item: HashMap<String, u64>,
+    tool_by_output_index: HashMap<u64, u64>,
+    /// Active tool per upstream key, so interleaved deltas reach their own
+    /// local index. `None` when no tool is open.
+    active_key: Option<String>,
+    /// Local indices whose `ToolEnd` was already emitted; both
+    /// `function_call_arguments.done` and `output_item.done` close a call.
+    closed_tools: HashSet<u64>,
     usage: Usage,
     response_id: Option<String>,
     stop_reason: StopReason,
@@ -686,9 +718,6 @@ impl ResponsesDecoder {
                 let item = event.get("item").unwrap_or(&Value::Null);
                 let kind = item.get("type").and_then(Value::as_str);
                 if matches!(kind, Some("function_call") | Some("custom_tool_call")) {
-                    // At most one tool block is open at a time (spec 45 §1.2);
-                    // a well-formed stream closes it with `done` first.
-                    events.extend(self.close_tool());
                     let custom = kind == Some("custom_tool_call");
                     let id = item
                         .get("call_id")
@@ -710,7 +739,14 @@ impl ResponsesDecoder {
                         signature: None,
                         custom,
                     });
-                    self.open_tool = Some(index as usize);
+                    let keys = upstream_aliases(event, item);
+                    for key in &keys {
+                        self.tool_by_item.insert(key.clone(), index);
+                    }
+                    if let Some(output_index) = event.get("output_index").and_then(Value::as_u64) {
+                        self.tool_by_output_index.insert(output_index, index);
+                    }
+                    self.active_key = keys.first().cloned();
                     events.push(StreamEvent::ToolStart {
                         index,
                         id,
@@ -722,7 +758,8 @@ impl ResponsesDecoder {
             "response.output_item.done" => {
                 // A custom call may carry its whole `input` only on the closing
                 // item (no `.delta`/`.done` events); take it before closing.
-                if let Some(index) = self.open_tool {
+                let index = self.local_index(event);
+                if let Some(index) = index {
                     if self.tools[index].custom && self.tools[index].arguments.is_empty() {
                         if let Some(input) = event
                             .get("item")
@@ -738,12 +775,13 @@ impl ResponsesDecoder {
                         }
                     }
                 }
-                events.extend(self.close_tool());
+                events.extend(self.close_index(index));
+                self.active_key = None;
             }
             "response.function_call_arguments.delta" | "response.custom_tool_call_input.delta" => {
                 let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
                 if !delta.is_empty() {
-                    if let Some(index) = self.open_tool {
+                    if let Some(index) = self.local_index(event) {
                         self.tools[index].arguments.push_str(delta);
                         events.push(StreamEvent::ToolArgsDelta {
                             index: index as u64,
@@ -753,12 +791,14 @@ impl ResponsesDecoder {
                 }
             }
             "response.function_call_arguments.done" => {
-                events.extend(self.close_tool());
+                let index = self.local_index(event);
+                events.extend(self.close_index(index));
+                self.active_key = None;
             }
             "response.custom_tool_call_input.done" => {
                 // `.done` repeats the whole free-form input; it is authoritative
                 // when the upstream skipped the deltas.
-                if let Some(index) = self.open_tool {
+                if let Some(index) = self.local_index(event) {
                     if let Some(input) = event
                         .get("input")
                         .and_then(Value::as_str)
@@ -773,7 +813,9 @@ impl ResponsesDecoder {
                         self.tools[index].arguments = input.to_string();
                     }
                 }
-                events.extend(self.close_tool());
+                let index = self.local_index(event);
+                events.extend(self.close_index(index));
+                self.active_key = None;
             }
             "response.output_text.delta" => {
                 let delta = event.get("delta").and_then(Value::as_str).unwrap_or("");
@@ -826,8 +868,48 @@ impl ResponsesDecoder {
         events
     }
 
-    fn close_tool(&mut self) -> Option<StreamEvent> {
-        let index = self.open_tool.take()?;
+    /// Resolve an upstream event's item_id / output_index to the local tool
+    /// index allocated at `output_item.added`; fall back to the active tool
+    /// only when the event carries neither key (older streams).
+    fn local_index(&self, event: &Value) -> Option<usize> {
+        if let Some(item_id) = event.get("item_id").and_then(Value::as_str).or_else(|| {
+            event
+                .get("item")
+                .and_then(|item| item.get("id"))
+                .and_then(Value::as_str)
+        }) {
+            if let Some(index) = self.tool_by_item.get(item_id) {
+                return Some(*index as usize);
+            }
+        }
+        if let Some(call_id) = event
+            .get("item")
+            .and_then(|item| item.get("call_id"))
+            .and_then(Value::as_str)
+        {
+            if let Some(index) = self.tool_by_item.get(&format!("call:{call_id}")) {
+                return Some(*index as usize);
+            }
+        }
+        if let Some(output_index) = event.get("output_index").and_then(Value::as_u64) {
+            if let Some(index) = self.tool_by_output_index.get(&output_index) {
+                return Some(*index as usize);
+            }
+        }
+        if event.get("item_id").is_none() && event.get("output_index").is_none() {
+            if let Some(key) = &self.active_key {
+                return self.tool_by_item.get(key).map(|index| *index as usize);
+            }
+        }
+        None
+    }
+
+    fn close_index(&mut self, index: Option<usize>) -> Option<StreamEvent> {
+        let index = index? as u64;
+        if !self.closed_tools.insert(index) {
+            return None;
+        }
+        let index = index as usize;
         if self.tools[index].custom {
             // Same neutral shape the request decoder produces: the free-form
             // input wrapped as `{"input":"…"}` (spec 42 §1.2).
@@ -1269,6 +1351,7 @@ mod tests {
             strict: None,
             cache_control: None,
             format: None,
+            custom: false,
         }];
         req.tool_choice = ToolChoice::Auto;
         req.reasoning.effort = Some("low".to_string());
@@ -1379,6 +1462,7 @@ mod tests {
                 strict: None,
                 cache_control: None,
                 format: None,
+                custom: false,
             },
             ToolDef {
                 name: "b".to_string(),
@@ -1387,6 +1471,7 @@ mod tests {
                 strict: Some(true),
                 cache_control: None,
                 format: None,
+                custom: false,
             },
             ToolDef {
                 name: "b".to_string(),
@@ -1395,6 +1480,7 @@ mod tests {
                 strict: None,
                 cache_control: None,
                 format: None,
+                custom: false,
             },
         ];
         req.tool_choice = ToolChoice::Named("b".to_string());
@@ -1419,6 +1505,7 @@ mod tests {
             strict: None,
             cache_control: None,
             format: None,
+            custom: false,
         }];
         req.tool_choice = ToolChoice::Auto;
         req.parallel_tool_calls = Some(true);
@@ -1749,6 +1836,7 @@ mod tests {
             strict: None,
             cache_control: None,
             format: None,
+            custom: false,
         }];
         req.tool_choice = ToolChoice::Required;
         let mut no_tools = caps_std();
@@ -1767,6 +1855,7 @@ mod tests {
             strict: None,
             cache_control: None,
             format: None,
+            custom: false,
         };
         for (choice, expected) in [
             (ToolChoice::None, "\"tool_choice\":\"none\""),
@@ -1790,6 +1879,7 @@ mod tests {
             strict: None,
             cache_control: None,
             format: Some(serde_json::json!({"type":"text"})),
+            custom: true,
         };
         let mut req = request("gpt-5.3-codex");
         req.tools = vec![custom.clone()];
@@ -1854,5 +1944,95 @@ mod tests {
         assert!(body
             .contains(r#"{"type":"function_call_output","call_id":"call_1","output":"patched"}"#));
         assert!(!body.contains("custom_tool_call_output"));
+    }
+
+    #[test]
+    fn interleaved_output_indices_keep_their_own_arguments() {
+        let lines = [
+            r#"{"event":{"type":"response.output_item.added","output_index":5,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"A","arguments":""}}}"#,
+            r#"{"event":{"type":"response.output_item.added","output_index":7,"item":{"id":"fc_2","type":"function_call","call_id":"call_2","name":"B","arguments":""}}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":5,"delta":"{\"x\":"}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.delta","item_id":"fc_2","output_index":7,"delta":"{\"y\":"}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":5,"delta":"1}"}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.delta","item_id":"fc_2","output_index":7,"delta":"2}"}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.done","item_id":"fc_1","output_index":5}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.done","item_id":"fc_2","output_index":7}}"#,
+        ];
+        let mut decoder = ResponsesDecoder::default();
+        let mut events = Vec::new();
+        for line in lines {
+            events.extend(decoder.push_line(line).unwrap());
+        }
+        let deltas: Vec<(u64, &str)> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ToolArgsDelta { index, delta } => Some((*index, delta.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            deltas,
+            vec![(0, "{\"x\":"), (1, "{\"y\":"), (0, "1}"), (1, "2}")]
+        );
+        let ends: Vec<u64> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ToolEnd { index } => Some(*index),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ends, vec![0, 1]);
+        let response = decoder.into_response().unwrap();
+        assert_eq!(response.tool_calls[0].arguments, "{\"x\":1}");
+        assert_eq!(response.tool_calls[1].arguments, "{\"y\":2}");
+    }
+
+    #[test]
+    fn custom_tool_without_format_stays_native() {
+        let custom = ToolDef {
+            name: "apply_patch".to_string(),
+            description: "Patch".to_string(),
+            parameters: Value::Null,
+            strict: None,
+            cache_control: None,
+            format: None,
+            custom: true,
+        };
+        let mut req = request("gpt-5.3-codex");
+        req.passthrough = vec![("store".to_string(), Value::Bool(true))];
+        req.tools = vec![custom];
+        let body = encode(&req, &caps_std());
+        assert!(
+            body.contains(r#"{"type":"custom","name":"apply_patch","description":"Patch"}"#),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn item_id_only_deltas_reach_their_own_tool() {
+        let lines = [
+            r#"{"event":{"type":"response.output_item.added","output_index":4,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"A","arguments":""}}}"#,
+            r#"{"event":{"type":"response.output_item.added","output_index":6,"item":{"id":"fc_2","type":"function_call","call_id":"call_2","name":"B","arguments":""}}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"x\":1}"}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.delta","item_id":"fc_2","delta":"{\"y\":2}"}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.done","item_id":"fc_1"}}"#,
+            r#"{"event":{"type":"response.function_call_arguments.done","item_id":"fc_2"}}"#,
+        ];
+        let mut decoder = ResponsesDecoder::default();
+        let mut events = Vec::new();
+        for line in lines {
+            events.extend(decoder.push_line(line).unwrap());
+        }
+        let deltas: Vec<(u64, &str)> = events
+            .iter()
+            .filter_map(|event| match event {
+                StreamEvent::ToolArgsDelta { index, delta } => Some((*index, delta.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas, vec![(0, "{\"x\":1}"), (1, "{\"y\":2}")]);
+        let response = decoder.into_response().unwrap();
+        assert_eq!(response.tool_calls[0].arguments, "{\"x\":1}");
+        assert_eq!(response.tool_calls[1].arguments, "{\"y\":2}");
     }
 }

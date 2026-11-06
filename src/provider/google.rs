@@ -4,6 +4,7 @@
 //! The tool-schema dialect (`google_schema`) is applied here and nowhere else.
 
 use std::collections::HashSet;
+use std::sync::Mutex;
 
 use rand::RngCore;
 use serde_json::Value;
@@ -11,6 +12,7 @@ use serde_json::Value;
 use crate::catalog::ModelCapabilities;
 use crate::catalog::Provider as ProviderKind;
 use crate::error::{ErrorKind, GatewayError};
+use crate::neutral::content::{signed_tool_start_id, tool_result_content, tool_result_text};
 use crate::neutral::{
     ContentBlock, ImageSource, Message, NeutralRequest, NeutralResponse, Role, StopReason,
     StreamEvent, SystemBlock, ToolUse, Usage,
@@ -40,7 +42,27 @@ pub fn max_output_tokens(client: Option<i64>, catalog_max: Option<i64>) -> i64 {
     }
 }
 
-pub struct GoogleProvider;
+/// Request-scoped custom tool names, captured by `encode_request` and used by
+/// the response decoders (spec 42 §1.5A). `provider/mod.rs` constructs one
+/// instance per request from the same-named const; each instance gets a fresh
+/// Mutex, so concurrent requests cannot see each other's declarations.
+pub struct GoogleProvider {
+    custom_tools: Mutex<Vec<String>>,
+}
+
+#[allow(non_upper_case_globals, clippy::declare_interior_mutable_const)]
+pub const GoogleProvider: GoogleProvider = GoogleProvider {
+    custom_tools: Mutex::new(Vec::new()),
+};
+
+impl GoogleProvider {
+    fn custom_names(&self) -> Vec<String> {
+        self.custom_tools
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
 
 impl ProviderEncoder for GoogleProvider {
     fn kind(&self) -> ProviderKind {
@@ -52,6 +74,11 @@ impl ProviderEncoder for GoogleProvider {
         request: &NeutralRequest,
         capabilities: &ModelCapabilities,
     ) -> Result<Vec<u8>, GatewayError> {
+        *self
+            .custom_tools
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            crate::neutral::tools::custom_tool_names(&request.tools);
         let mut out = String::with_capacity(512);
         out.push_str("{\"model\":");
         push_json_str(&mut out, &model_path(&request.model));
@@ -136,6 +163,7 @@ impl ProviderEncoder for GoogleProvider {
     }
 
     fn decode_response(&self, body: &[u8]) -> Result<NeutralResponse, GatewayError> {
+        let custom_tools = self.custom_names();
         let mut response = NeutralResponse::default();
         let mut tool_calls: Vec<ToolUse> = Vec::new();
         let mut parsed_any = false;
@@ -197,7 +225,7 @@ impl ProviderEncoder for GoogleProvider {
                     continue;
                 }
                 if let Some(call) = part.get("functionCall") {
-                    if let Some(tool) = tool_from_call(call, part) {
+                    if let Some(tool) = tool_from_call(call, part, &custom_tools) {
                         tool_calls.push(tool);
                     }
                     continue;
@@ -243,7 +271,7 @@ impl ProviderEncoder for GoogleProvider {
     }
 
     fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
-        Box::new(GoogleStreamDecoder::default())
+        Box::new(GoogleStreamDecoder::with_custom_tools(self.custom_names()))
     }
 }
 
@@ -293,7 +321,18 @@ fn tool_declarations(request: &NeutralRequest, capabilities: &ModelCapabilities)
         if tool.name.is_empty() || !seen.insert(tool.name.as_str()) {
             continue;
         }
-        let cleaned = clean_schema(&tool.parameters);
+        // Responses custom tools have no free-form equivalent upstream; declare
+        // a single `input` string so the model returns {"input":"…"} (42 §1.5A).
+        // The declaration's `format` (grammar/lark/regex) has no counterpart.
+        if tool.custom && tool.format.is_some() {
+            eprintln!("[zed-proxy] google: dropping custom tool format");
+        }
+        let declared_schema = if tool.custom {
+            crate::neutral::tools::custom_tool_schema()
+        } else {
+            tool.parameters.clone()
+        };
+        let cleaned = clean_schema(&declared_schema);
         let mut declaration = String::from("{\"name\":");
         push_json_str(&mut declaration, &tool.name);
         declaration.push_str(",\"description\":");
@@ -377,6 +416,16 @@ fn message_parts(
     let mut visible: Vec<String> = Vec::new();
     let mut calls: Vec<String> = Vec::new();
     let mut signature: Option<String> = None;
+    let structured_results: Vec<(&str, &[Value])> = message
+        .parts
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Opaque(opaque) if opaque.provider == "google" => {
+                tool_result_content(&opaque.item)
+            }
+            _ => None,
+        })
+        .collect();
     for block in &message.parts {
         match block {
             ContentBlock::Text(text) => {
@@ -412,7 +461,18 @@ fn message_parts(
             }
             ContentBlock::ToolResult(result) => {
                 match result_name(request, index, &result.tool_use_id) {
-                    Some(name) => calls.push(function_response_part(&name, result)),
+                    Some(name) => {
+                        let blocks = structured_results
+                            .iter()
+                            .find(|(id, _)| *id == result.tool_use_id)
+                            .map(|(_, blocks)| *blocks);
+                        calls.push(function_response_part(
+                            &name,
+                            result,
+                            blocks,
+                            capabilities.supports_images,
+                        ));
+                    }
                     None => {
                         // Gemini rejects a response with no matching call, so the
                         // result stays visible text instead (spec 45 §4.3 item 4).
@@ -431,7 +491,9 @@ fn message_parts(
             ContentBlock::Compaction(_) => {}
             ContentBlock::Opaque(opaque) => {
                 if opaque.provider == "google" {
-                    signature = opaque_signature(&opaque.item);
+                    if let Some(value) = opaque_signature(&opaque.item) {
+                        signature = Some(value);
+                    }
                 }
             }
         }
@@ -506,6 +568,14 @@ fn function_call_part(tool: &ToolUse, signature: Option<&str>) -> String {
         .ok()
         .filter(Value::is_object)
         .unwrap_or_else(|| Value::Object(Default::default()));
+    // History from a Responses custom tool is free text; the degraded Gemini
+    // declaration expects it wrapped in a single `input` property (42 §1.5A).
+    let arguments = if tool.custom && arguments.get("input").is_none() {
+        serde_json::from_str(&crate::neutral::tools::wrap_custom_input(&tool.arguments))
+            .unwrap_or(arguments)
+    } else {
+        arguments
+    };
     let mut part = String::from("{\"functionCall\":{\"name\":");
     push_json_str(&mut part, &tool.name);
     part.push_str(",\"args\":");
@@ -520,14 +590,131 @@ fn function_call_part(tool: &ToolUse, signature: Option<&str>) -> String {
     part
 }
 
-fn function_response_part(name: &str, result: &crate::neutral::ToolResult) -> String {
+fn image_extension(mime_type: &str) -> &str {
+    match mime_type {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        _ => "bin",
+    }
+}
+
+/// `functionResponse` for plain text, a JSON value and/or base64 images
+/// (spec 22 §5.3.4). `is_error` keeps the existing `{"error":"…"}` shape and
+/// never emits an image part.
+fn function_response_part(
+    name: &str,
+    result: &crate::neutral::ToolResult,
+    blocks: Option<&[Value]>,
+    supports_images: bool,
+) -> String {
     let mut part = String::from("{\"functionResponse\":{\"name\":");
     push_json_str(&mut part, name);
-    part.push_str(",\"response\":{\"");
-    part.push_str(if result.is_error { "error" } else { "result" });
-    part.push_str("\":");
-    push_json_str(&mut part, &result.output);
-    part.push_str("}}}");
+    if result.is_error {
+        part.push_str(",\"response\":{\"error\":");
+        push_json_str(
+            &mut part,
+            &blocks
+                .map(tool_result_text)
+                .unwrap_or_else(|| result.output.clone()),
+        );
+        part.push_str("}}}");
+        return part;
+    }
+    let Some(blocks) = blocks else {
+        part.push_str(",\"response\":{\"result\":");
+        push_json_str(&mut part, &result.output);
+        part.push_str("}}}");
+        return part;
+    };
+    let text: Vec<&str> = blocks
+        .iter()
+        .filter_map(|block| match block.get("type").and_then(Value::as_str) {
+            Some("text") => block.get("text").and_then(Value::as_str),
+            _ => None,
+        })
+        .collect();
+    let data = blocks
+        .iter()
+        .find(|block| block.get("type").and_then(Value::as_str) == Some("json"))
+        .and_then(|block| block.get("value"));
+    let images: Vec<(&str, &str)> = if supports_images {
+        blocks
+            .iter()
+            .filter_map(|block| match block.get("type").and_then(Value::as_str) {
+                Some("image") => Some((
+                    block.get("media_type")?.as_str()?,
+                    block.get("data")?.as_str()?,
+                )),
+                _ => None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let result_value = match (text.len(), data, images.len()) {
+        (_, Some(data), 0) if text.is_empty() => data.to_string(),
+        (0, None, 0) => "\"\"".to_string(),
+        _ => {
+            let mut response = String::from("{");
+            let mut first = true;
+            let mut push = |key: &str, value: String, first: &mut bool| {
+                if !*first {
+                    response.push(',');
+                }
+                *first = false;
+                response.push_str(&format!("\"{key}\":{value}"));
+            };
+            if !text.is_empty() {
+                let mut encoded = String::new();
+                push_json_str(&mut encoded, &text.join("\n\n"));
+                push("text", encoded, &mut first);
+            }
+            if let Some(data) = data {
+                push("data", data.to_string(), &mut first);
+            }
+            if images.len() == 1 {
+                push(
+                    "image_ref",
+                    serde_json::json!({"$ref": format!("tool_image_0.{}", image_extension(images[0].0))}).to_string(),
+                    &mut first,
+                );
+            } else if images.len() > 1 {
+                let refs: Vec<Value> = images
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (mime, ..))| {
+                        serde_json::json!({"$ref": format!("tool_image_{index}.{}", image_extension(mime))})
+                    })
+                    .collect();
+                push("image_refs", Value::Array(refs).to_string(), &mut first);
+            }
+            response.push('}');
+            response
+        }
+    };
+    part.push_str(",\"response\":{\"result\":");
+    part.push_str(&result_value);
+    part.push('}');
+    if !images.is_empty() {
+        part.push_str(",\"parts\":[");
+        for (index, (mime, data)) in images.iter().enumerate() {
+            if index > 0 {
+                part.push(',');
+            }
+            part.push_str("{\"inlineData\":{\"displayName\":");
+            push_json_str(
+                &mut part,
+                &format!("tool_image_{index}.{}", image_extension(mime)),
+            );
+            part.push_str(",\"mimeType\":");
+            push_json_str(&mut part, mime);
+            part.push_str(",\"data\":");
+            push_json_str(&mut part, data);
+            part.push_str("}}");
+        }
+        part.push(']');
+    }
+    part.push_str("}}");
     part
 }
 
@@ -602,7 +789,7 @@ fn map_finish(reason: Option<&str>, has_tools: bool) -> StopReason {
     }
 }
 
-fn tool_from_call(call: &Value, part: &Value) -> Option<ToolUse> {
+fn tool_from_call(call: &Value, part: &Value, custom_tools: &[String]) -> Option<ToolUse> {
     let name = call
         .get("name")
         .and_then(Value::as_str)
@@ -612,6 +799,8 @@ fn tool_from_call(call: &Value, part: &Value) -> Option<ToolUse> {
         Some(Value::Object(_)) => call.get("args").cloned().unwrap_or_default(),
         _ => Value::Object(Default::default()),
     };
+    let (custom, arguments) =
+        crate::neutral::tools::restore_custom_call(&name, &arguments, custom_tools);
     let id = call
         .get("id")
         .and_then(Value::as_str)
@@ -626,9 +815,9 @@ fn tool_from_call(call: &Value, part: &Value) -> Option<ToolUse> {
     Some(ToolUse {
         id,
         name,
-        arguments: arguments.to_string(),
+        arguments,
         signature,
-        custom: false,
+        custom,
     })
 }
 
@@ -653,6 +842,17 @@ pub struct GoogleStreamDecoder {
     blocked: Option<String>,
     tool_index: u64,
     tool_calls: usize,
+    /// Custom tool names declared by this request (spec 42 §1.5A).
+    custom_tools: Vec<String>,
+}
+
+impl GoogleStreamDecoder {
+    pub fn with_custom_tools(custom_tools: Vec<String>) -> Self {
+        Self {
+            custom_tools,
+            ..Self::default()
+        }
+    }
 }
 
 impl StreamDecoder for GoogleStreamDecoder {
@@ -732,17 +932,23 @@ impl StreamDecoder for GoogleStreamDecoder {
                 continue;
             }
             if let Some(call) = part.get("functionCall") {
-                let Some(tool) = tool_from_call(call, part) else {
+                let Some(tool) = tool_from_call(call, part, &self.custom_tools) else {
                     continue;
                 };
                 let index = self.tool_index;
                 self.tool_index += 1;
                 self.tool_calls += 1;
+                let id = tool
+                    .signature
+                    .as_deref()
+                    .map(|signature| signed_tool_start_id(&tool.id, signature))
+                    .unwrap_or(tool.id);
+                let custom = tool.custom;
                 events.push(StreamEvent::ToolStart {
                     index,
-                    id: tool.id,
+                    id,
                     name: tool.name,
-                    custom: false,
+                    custom,
                 });
                 events.push(StreamEvent::ToolArgsDelta {
                     index,
@@ -796,9 +1002,12 @@ impl StreamDecoder for GoogleStreamDecoder {
 }
 
 #[cfg(test)]
+// The provider is a request-scoped const value; tests call it directly.
+#[allow(clippy::borrow_interior_mutable_const)]
 mod tests {
     use super::*;
     use crate::catalog::EffortLevel;
+    use crate::neutral::content::{split_signed_tool_start_id, tool_result_content_block};
     use crate::neutral::{SystemBlock, ToolChoice, ToolDef, ToolResult};
     use serde_json::json;
 
@@ -864,6 +1073,7 @@ mod tests {
             strict: None,
             cache_control: None,
             format: None,
+            custom: false,
         }
     }
 
@@ -1786,5 +1996,159 @@ mod tests {
             index: 0,
             delta: "{}".to_string()
         }));
+    }
+
+    #[test]
+    fn response_signatures_stay_on_their_own_calls() {
+        let line = r#"{"candidates":[{"content":{"parts":[{"functionCall":{"id":"call_1","name":"Read","args":{}},"thoughtSignature":"sig-1"},{"functionCall":{"id":"call_2","name":"Write","args":{}}}]},"finishReason":"STOP","index":0}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}"#;
+        let reduced = GoogleProvider.decode_response(line.as_bytes()).unwrap();
+        assert_eq!(reduced.tool_calls[0].signature.as_deref(), Some("sig-1"));
+        assert_eq!(reduced.tool_calls[1].signature, None);
+
+        let mut decoder = GoogleStreamDecoder::default();
+        let events = decoder.push_line(line).unwrap();
+        let (id, signature) = events
+            .iter()
+            .find_map(|event| match event {
+                StreamEvent::ToolStart { id, .. } => Some(split_signed_tool_start_id(id)),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(id, "call_1");
+        assert_eq!(signature, Some("sig-1"));
+    }
+
+    #[test]
+    fn google_request_rewrites_thought_signature_on_its_own_call() {
+        let mut call = ToolUse {
+            id: "call_1".to_string(),
+            name: "Read".to_string(),
+            arguments: "{}".to_string(),
+            signature: Some("sig-1".to_string()),
+            custom: false,
+        };
+        let request = NeutralRequest {
+            model: "gemini-4-argon".to_string(),
+            messages: vec![message(
+                Role::Assistant,
+                vec![ContentBlock::ToolUse(call.clone())],
+            )],
+            ..Default::default()
+        };
+        let body = encode(&request);
+        assert!(
+            body.contains(
+                r#"{"functionCall":{"name":"Read","args":{}},"thoughtSignature":"sig-1"}"#
+            ),
+            "{body}"
+        );
+        call.signature = None;
+        let unsigned = NeutralRequest {
+            messages: vec![message(Role::Assistant, vec![ContentBlock::ToolUse(call)])],
+            ..request
+        };
+        assert!(!encode(&unsigned).contains("thoughtSignature"));
+    }
+
+    #[test]
+    fn object_and_image_tool_results_keep_the_spec_shape() {
+        let base = NeutralRequest {
+            model: "gemini-4-argon".to_string(),
+            messages: vec![message(Role::Assistant, vec![call("call_1", "Read", "{}")])],
+            ..Default::default()
+        };
+        for (blocks, expected) in [
+            (
+                json!([{"type": "json", "value": {"rows": [1, 2]}}]),
+                r#"{"functionResponse":{"name":"Read","response":{"result":{"rows":[1,2]}}}}"#,
+            ),
+            (
+                json!([
+                    {"type": "text", "text": "screenshot"},
+                    {"type": "image", "media_type": "image/png", "data": "QUJD"}
+                ]),
+                r#"{"functionResponse":{"name":"Read","response":{"result":{"text":"screenshot","image_ref":{"$ref":"tool_image_0.png"}}},"parts":[{"inlineData":{"displayName":"tool_image_0.png","mimeType":"image/png","data":"QUJD"}}]}}"#,
+            ),
+        ] {
+            let mut request = base.clone();
+            request.messages.push(message(
+                Role::User,
+                vec![
+                    result("call_1", ""),
+                    tool_result_content_block("call_1", blocks.as_array().unwrap().to_vec()),
+                ],
+            ));
+            let body = encode(&request);
+            assert!(body.contains(expected), "{body}");
+            assert!(!body.contains(r#""result":"{""#), "{body}");
+        }
+        let mut failed = base;
+        let blocks = json!([
+            {"type": "text", "text": "denied"},
+            {"type": "image", "media_type": "image/png", "data": "QUJD"}
+        ]);
+        failed.messages.push(message(
+            Role::User,
+            vec![
+                ContentBlock::ToolResult(ToolResult {
+                    tool_use_id: "call_1".to_string(),
+                    output: "denied".to_string(),
+                    is_error: true,
+                    custom: false,
+                }),
+                tool_result_content_block("call_1", blocks.as_array().unwrap().to_vec()),
+            ],
+        ));
+        let body = encode(&failed);
+        assert!(
+            body.contains(r#"{"functionResponse":{"name":"Read","response":{"error":"denied"}}}"#),
+            "{body}"
+        );
+        assert!(!body.contains("inlineData"), "{body}");
+    }
+
+    #[test]
+    fn custom_tool_downgrades_and_restores_through_gemini() {
+        use crate::provider::ProviderEncoder;
+
+        let mut request = NeutralRequest {
+            model: "gemini-4-argon".to_string(),
+            provider: ProviderKind::Google,
+            ..Default::default()
+        };
+        request.tools = vec![ToolDef {
+            name: "apply_patch".to_string(),
+            description: "Patch files".to_string(),
+            parameters: json!({"type":"object","properties":{}}),
+            strict: None,
+            cache_control: None,
+            format: Some(json!({"type":"grammar"})),
+            custom: true,
+        }];
+        let provider: Box<dyn ProviderEncoder> = Box::new(GoogleProvider);
+        let body = String::from_utf8(provider.encode_request(&request, &caps()).unwrap()).unwrap();
+        assert!(
+            body.contains(r#""name":"apply_patch","description":"Patch files","parameters":{"type":"object","properties":{"input":{"type":"string"}},"required":["input"]}"#),
+            "{body}"
+        );
+        assert!(!body.contains("grammar"), "{body}");
+
+        let upstream = br#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"apply_patch","args":{"input":"*** Begin Patch"}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2}}"#;
+        let reduced = provider.decode_response(upstream).unwrap();
+        assert_eq!(reduced.tool_calls.len(), 1);
+        assert!(reduced.tool_calls[0].custom);
+        assert_eq!(reduced.tool_calls[0].arguments, "*** Begin Patch");
+
+        let mut decoder = provider.stream_decoder();
+        let events = decoder
+            .push_line(String::from_utf8_lossy(upstream).as_ref())
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, StreamEvent::ToolStart { custom: true, .. })));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ToolArgsDelta { delta, .. } if delta == "*** Begin Patch"
+        )));
     }
 }

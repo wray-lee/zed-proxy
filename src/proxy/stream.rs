@@ -34,11 +34,27 @@ pub struct SseState {
     pub stop_reason: crate::neutral::StopReason,
     /// `sequence_number` counter for the Responses protocol (spec 42 §3.1).
     pub sequence: u64,
-    /// Tool argument text accumulated per neutral tool index.
+    /// Client-protocol-specific slot metadata. Chat keeps argument text per
+    /// tool index; Anthropic keeps a `"<neutral index>:<tag>"` per client block;
+    /// Responses keeps an output item's metadata / completed JSON per
+    /// `output_index`.
     pub tool_arguments: Vec<String>,
+    /// Argument buffers keyed by neutral tool index (spec 45 §4.4A): every
+    /// encoder appends only to `tool_args[event.index]`.
+    pub tool_args: Vec<String>,
+    /// Neutral tool index → client block index (Anthropic) / `output_index`
+    /// (Responses); `NO_TOOL` means that slot is closed or was never opened.
+    pub tool_blocks: Vec<u64>,
+    /// Whether the tool at each neutral index uses free-form input.
+    pub tool_custom: Vec<bool>,
+    /// Client `output_index` of the open message/reasoning item (Responses).
+    pub open_item_index: Option<u64>,
     /// Set when the client asked for `stream_options.include_usage`.
     pub include_usage: bool,
 }
+
+/// Sentinel for a tool slot that is closed or unknown (spec 45 §4.4A).
+pub const NO_TOOL: u64 = u64::MAX;
 
 impl SseState {
     pub fn new(model: impl Into<String>, created_unix: i64) -> Self {
@@ -47,6 +63,64 @@ impl SseState {
             created_unix,
             sequence: 0,
             ..Self::default()
+        }
+    }
+
+    /// Open the slot for neutral tool `index`, assigning it `client_index`.
+    /// An absurd index is rejected instead of allocating a huge vector.
+    pub fn ensure_tool(&mut self, index: u64, client_index: u64, custom: bool) -> bool {
+        if index > 1024 || index == NO_TOOL || client_index == NO_TOOL {
+            return false;
+        }
+        let slot = index as usize;
+        while self.tool_args.len() <= slot {
+            self.tool_args.push(String::new());
+        }
+        while self.tool_blocks.len() <= slot {
+            self.tool_blocks.push(NO_TOOL);
+        }
+        while self.tool_custom.len() <= slot {
+            self.tool_custom.push(false);
+        }
+        self.tool_args[slot].clear();
+        self.tool_blocks[slot] = client_index;
+        self.tool_custom[slot] = custom;
+        true
+    }
+
+    /// The output slot assigned to an open tool, or `None` for an unknown /
+    /// closed index. Out-of-range deltas must be dropped, not redirected.
+    pub fn tool_slot(&self, index: u64) -> Option<u64> {
+        let slot = usize::try_from(index).ok()?;
+        let value = *self.tool_blocks.get(slot)?;
+        (value != NO_TOOL).then_some(value)
+    }
+
+    pub fn close_tool(&mut self, index: u64) {
+        if let Ok(slot) = usize::try_from(index) {
+            if let Some(value) = self.tool_blocks.get_mut(slot) {
+                *value = NO_TOOL;
+            }
+        }
+    }
+
+    pub fn open_tool_indices(&self) -> Vec<u64> {
+        self.tool_blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| **value != NO_TOOL)
+            .map(|(index, _)| index as u64)
+            .collect()
+    }
+
+    /// Grow `tool_arguments` (whose index meaning is client-protocol specific)
+    /// to cover `index` and set its value.
+    pub fn set_tool_argument(&mut self, index: u64, value: String) {
+        if let Ok(slot) = usize::try_from(index) {
+            while self.tool_arguments.len() <= slot {
+                self.tool_arguments.push(String::new());
+            }
+            self.tool_arguments[slot] = value;
         }
     }
 }
