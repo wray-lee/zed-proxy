@@ -398,7 +398,7 @@ fn percent_decode(input: &str) -> String {
 /// Parse the decrypted credential, name the account and persist it. Callers
 /// hold the slot lock, so a superseded flow can never overwrite a newer one
 /// (spec 60 §4 rule 7).
-fn save_account(
+pub(crate) fn save_account(
     store: &AccountStore,
     user_id: &str,
     plain: &[u8],
@@ -767,6 +767,8 @@ pub fn run_cli_login(name: Option<&str>) -> Result<(), GatewayError> {
         Err(err) => return Err(err.to_gateway()),
     };
 
+    // main entered ZED_DATA_DIR before dispatching, so "." is that directory
+    // (spec 60 §9, spec 75 §2.2).
     let store = AccountStore::load(".", now_unix());
     let saved = save_account(&store, &params.user_id, &plain, name)?;
     finish_success(&store, &saved);

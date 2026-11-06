@@ -26,6 +26,10 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = args.first().map(String::as_str);
     let rest = &args[args.len().min(1)..];
+    if let Err(err) = enter_data_dir(command) {
+        eprintln!("[zed-proxy] {err}");
+        return ExitCode::FAILURE;
+    }
     match command {
         None | Some("serve") => {
             exit_code(http::server::run_serve(rest.first().map(String::as_str)))
@@ -51,6 +55,21 @@ fn main() -> ExitCode {
     }
 }
 
+/// Enter `ZED_DATA_DIR` before the state-reading subcommands run, so they all
+/// see the same directory (spec 75 §2.2 item 8, spec 60 §9). `serve` resolves
+/// it itself and must not get it applied twice; help and unknown commands must
+/// not create a directory as a side effect.
+fn enter_data_dir(command: Option<&str>) -> Result<(), config::ConfigError> {
+    if !matches!(command, Some("login" | "accounts" | "healthcheck")) {
+        return Ok(());
+    }
+    let data_dir = std::env::var("ZED_DATA_DIR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(std::path::PathBuf::from);
+    config::prepare_data_dir(data_dir.as_ref())
+}
+
 fn exit_code(code: i32) -> ExitCode {
     if code == 0 {
         ExitCode::SUCCESS
@@ -66,16 +85,8 @@ fn print_usage() {
 }
 
 /// `accounts` — print the configured accounts, no network access (spec 75 §2.3).
+/// The process has already entered `ZED_DATA_DIR`, so "." is the data directory.
 fn run_accounts() -> ExitCode {
-    let data_dir = std::env::var("ZED_DATA_DIR")
-        .ok()
-        .filter(|value| !value.trim().is_empty());
-    if let Some(dir) = data_dir.as_deref() {
-        if let Err(err) = std::env::set_current_dir(dir) {
-            eprintln!("[zed-proxy] cannot use ZED_DATA_DIR {dir:?}: {err}");
-            return ExitCode::FAILURE;
-        }
-    }
     let store = accounts::AccountStore::load(".", http::server::now_unix());
     let entries = store.snapshots();
     if entries.is_empty() {
@@ -213,5 +224,59 @@ mod tests {
         assert!(parse_healthcheck_args(&["--url".to_string()]).is_err());
         assert!(parse_healthcheck_args(&["ftp://x".to_string()]).is_err());
         assert!(parse_healthcheck_args(&["--url".to_string(), "ftp://x".to_string()]).is_err());
+    }
+
+    /// `ZED_DATA_DIR` is created and entered before `login`/`accounts`, so the
+    /// login save path writes there (review #12). Cwd and environment are
+    /// process-global; every test that changes them takes this lock.
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        static GUARD: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+        GUARD
+            .get_or_init(|| std::sync::Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    #[test]
+    fn login_and_accounts_write_into_the_zed_data_dir() {
+        let _guard = env_guard();
+        let original = std::env::current_dir().unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "zprs-cli-data-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let data = root.join("data");
+        std::fs::create_dir_all(&root).unwrap();
+        std::env::set_var("ZED_DATA_DIR", &data);
+
+        let result = enter_data_dir(Some("login"));
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(std::env::current_dir().unwrap(), data);
+        assert!(data.is_dir(), "ZED_DATA_DIR is created");
+
+        // The same steps `run_cli_login` performs after the callback.
+        let store = accounts::AccountStore::load(".", 0);
+        let saved = login::save_account(
+            &store,
+            "user_fake_001",
+            br#"{"access_token":"FAKE-NOT-REAL"}"#,
+            Some("fake"),
+        )
+        .unwrap();
+        assert_eq!(saved, "fake");
+        assert!(data.join("accounts.json").is_file());
+        assert!(!root.join("accounts.json").exists());
+        assert_eq!(
+            accounts::AccountStore::load(".", 0).names(),
+            vec!["fake".to_string()]
+        );
+
+        std::env::remove_var("ZED_DATA_DIR");
+        std::env::set_current_dir(&original).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

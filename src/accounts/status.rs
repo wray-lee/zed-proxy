@@ -2,11 +2,15 @@
 //! `/zed/accounts/status` (spec 50 §8, spec 80 §3), plus the passive
 //! token/billing check and the exact response bodies (spec 70 §3.6–§3.7).
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
+
 use serde_json::Value;
 
 use crate::error::{ErrorKind, GatewayError};
-use crate::upstream::client::{classify_attempt, UpstreamClient};
-use crate::upstream::token::{me_request, organization_id, token_request};
+use crate::upstream::client::UpstreamClient;
+use crate::upstream::token::{cached_or_minted, me_request, TokenCache};
 
 use super::store::{AccountSnapshot, AccountStore};
 
@@ -163,7 +167,7 @@ pub async fn status_body(store: &AccountStore, upstream: &dyn UpstreamClient, no
             }),
             None => None,
         };
-        let report = check_account(upstream, account, &current, now, credit).await;
+        let report = check_account(store, upstream, account, &current, now, credit).await;
         if index > 0 {
             out.push(',');
         }
@@ -253,10 +257,11 @@ fn push_report(out: &mut String, report: &AccountStatusReport) {
 }
 
 // ---------------------------------------------------------------------------
-// Passive check: refresh the LLM token, then pull the billing profile
+// Passive check: reuse a fresh LLM token, then pull the billing profile
 // ---------------------------------------------------------------------------
 
 async fn check_account(
+    store: &AccountStore,
     upstream: &dyn UpstreamClient,
     account: &AccountSnapshot,
     current: &str,
@@ -281,7 +286,7 @@ async fn check_account(
         billing_ok: false,
         usable: false,
         quota_state: "unavailable",
-        plan: None,
+        plan: Some("unknown".to_string()),
         used: None,
         limit: None,
         remaining: None,
@@ -292,90 +297,151 @@ async fn check_account(
         error: Some("llm_token_refresh_failed"),
     };
 
-    let profile = match fetch_profile(upstream, account).await {
-        Ok(profile) => profile,
-        Err(_) => return report,
-    };
+    // No fresh cached token and the exchange failed: the credential is dead
+    // (spec 70 §3.7). Everything below is a billing problem only.
+    if status_token(store, upstream, account, now).await.is_err() {
+        return report;
+    }
     report.token_ok = true;
     report.check_ok = true;
     report.billing_ok = true;
     report.usable = true;
-
-    let Some(billing) = parse_billing(&profile) else {
-        report.check_ok = false;
-        report.billing_ok = false;
-        report.quota_state = "unknown";
-        report.error = Some("invalid_billing_response");
-        return report;
-    };
-    apply_billing(&mut report, billing);
     report.error = None;
+
+    let profile = match fetch_billing_profile(upstream, account).await {
+        Ok(profile) => profile,
+        Err(BillingFailure::Unreachable) => {
+            // The account still schedules; only the report is incomplete
+            // (spec 50 §8.2.1 item 6).
+            report.check_ok = false;
+            report.billing_ok = false;
+            report.quota_state = "unknown";
+            report.error = Some("billing_check_failed");
+            return report;
+        }
+        Err(BillingFailure::Unreadable) => {
+            report.check_ok = false;
+            report.billing_ok = false;
+            report.quota_state = "unknown";
+            report.error = Some("invalid_billing_response");
+            return report;
+        }
+    };
+    apply_billing(&mut report, parse_billing(&profile));
     report
 }
 
-/// `client/users/me` first (it carries both the organization id and the
-/// billing profile), then minting the token proves the credential still works
-/// (spec 10 §2.3, §2.5).
-async fn fetch_profile(
+// ---------------------------------------------------------------------------
+// Token cache (spec 50 §1.2, spec 70 §3.7)
+// ---------------------------------------------------------------------------
+
+type TokenKey = (PathBuf, String);
+
+fn token_pool() -> &'static Mutex<HashMap<TokenKey, TokenCache>> {
+    static POOL: OnceLock<Mutex<HashMap<TokenKey, TokenCache>>> = OnceLock::new();
+    POOL.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn pool_lock() -> std::sync::MutexGuard<'static, HashMap<TokenKey, TokenCache>> {
+    token_pool()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Fresh cached token for the passive check, otherwise mint one (spec 70 §3.7).
+///
+/// shortcut: `proxy::account_token` takes `&Services`, which `status_body` does
+/// not receive (passing it would change `http/router.rs`), so the status path
+/// keeps its own pool. Polls still reuse the token; the proxy pool is separate.
+async fn status_token(
+    store: &AccountStore,
     upstream: &dyn UpstreamClient,
     account: &AccountSnapshot,
-) -> Result<Value, GatewayError> {
+    now: i64,
+) -> Result<String, GatewayError> {
+    let key = (store.data_dir().to_path_buf(), account.name.clone());
+    let mut cache = pool_lock().get(&key).cloned().unwrap_or_default();
+    let token = cached_or_minted(
+        upstream,
+        &mut cache,
+        &account.user_id,
+        &account.credential,
+        now,
+    )
+    .await?;
+    pool_lock().insert(key, cache);
+    Ok(token)
+}
+
+enum BillingFailure {
+    /// Network error, timeout, non-2xx, oversize (spec 70 §3.7).
+    Unreachable,
+    /// Fetched, but not a JSON object (spec 70 §3.7, §3.7.1 item 8).
+    Unreadable,
+}
+
+/// The billing half of `client/users/me` (spec 10 §2.5).
+async fn fetch_billing_profile(
+    upstream: &dyn UpstreamClient,
+    account: &AccountSnapshot,
+) -> Result<Value, BillingFailure> {
     let me = upstream
         .execute(me_request(&account.user_id, &account.credential))
-        .await?;
-    if let Some(failure) = classify_attempt(me.status, &me.body, false) {
-        return Err(failure.error);
+        .await
+        .map_err(|_| BillingFailure::Unreachable)?;
+    // Only "not fetched" counts as an outage; a 2xx with a bad body is a
+    // parse failure (spec 70 §3.7).
+    if !(200..300).contains(&me.status) {
+        return Err(BillingFailure::Unreachable);
     }
-    let profile: Value = serde_json::from_slice(&me.body)
-        .map_err(|_| GatewayError::transient(Some(me.status), "invalid users/me response"))?;
-    let organization = organization_id(&profile)
-        .ok_or_else(|| GatewayError::auth(401, "no organization id for this account"))?;
-    let minted = upstream
-        .execute(token_request(
-            &account.user_id,
-            &account.credential,
-            &organization,
-        ))
-        .await?;
-    if let Some(failure) = classify_attempt(minted.status, &minted.body, false) {
-        return Err(failure.error);
+    let profile: Value =
+        serde_json::from_slice(&me.body).map_err(|_| BillingFailure::Unreadable)?;
+    if !profile.is_object() {
+        return Err(BillingFailure::Unreadable);
     }
-    let token: Value = serde_json::from_slice(&minted.body)
-        .map_err(|_| GatewayError::auth(401, "invalid llm_tokens response"))?;
-    match token.get("token").and_then(Value::as_str) {
-        Some(text) if !text.is_empty() => Ok(profile),
-        _ => Err(GatewayError::auth(401, "llm_tokens response has no token")),
-    }
+    Ok(profile)
 }
 
 // ---------------------------------------------------------------------------
 // Billing summary (spec 70 §3.7)
 // ---------------------------------------------------------------------------
 
-/// Parse the plan block of a `client/users/me` response. Zed has shipped more
-/// than one plan shape (`plan_v3`, older `plan_v2`), so both are accepted;
-/// anything unreadable is reported as a parse failure, never a zero quota.
-pub fn parse_billing(profile: &Value) -> Option<BillingSummary> {
-    let plan = ["plan_v3", "plan_v2", "plan_info", "planInfo", "plan"]
+/// Parse the plan block of a `client/users/me` response (spec 70 §3.7.1).
+/// The real shape keeps everything under a top-level `plan` object; older Zed
+/// versions put a `plan_v3`/`plan_v2`/… object at the root, so those are the
+/// fallback. A legal JSON body without any plan object is "plan unknown", not
+/// a parse failure (spec 70 §3.7.1 item 7).
+pub fn parse_billing(profile: &Value) -> BillingSummary {
+    let plan = ["plan", "plan_v3", "plan_v2", "plan_info", "planInfo"]
         .iter()
-        .find_map(|key| profile.get(*key).filter(|value| value.is_object()))?;
+        .find_map(|key| profile.get(*key).filter(|value| value.is_object()));
 
-    let mut summary = BillingSummary {
-        plan: plan
-            .get("plan")
-            .and_then(Value::as_str)
-            .filter(|name| !name.is_empty())
-            .map(str::to_string),
-        ..BillingSummary::default()
+    let mut summary = BillingSummary::default();
+    let Some(plan) = plan else {
+        summary.plan = Some("unknown".to_string());
+        return summary;
     };
+
+    summary.plan = Some(
+        ["plan_v3", "plan_v2", "plan"]
+            .iter()
+            .find_map(|key| {
+                plan.get(*key)
+                    .and_then(Value::as_str)
+                    .filter(|name| !name.is_empty())
+            })
+            .unwrap_or("unknown")
+            .to_string(),
+    );
     if let Some(requests) = plan
         .get("usage")
         .and_then(|usage| usage.get("model_requests"))
         .filter(|value| value.is_object())
     {
         summary.used = requests.get("used").and_then(as_i64);
-        // An integer limit or `{"limited": n}`; 0 or a missing value means the
-        // plan does not publish a number (spec 70 §3.7).
+        // An integer limit or `{"limited": n}`; 0, a negative value or a
+        // missing value means the plan does not publish a number (spec 70
+        // §3.7.1 item 5).
         summary.limit = requests
             .get("limit")
             .and_then(limit_value)
@@ -388,20 +454,46 @@ pub fn parse_billing(profile: &Value) -> Option<BillingSummary> {
         .and_then(Value::as_str)
         .filter(|text| !text.is_empty())
         .map(str::to_string);
-    summary.usage_based_billing =
-        flag(plan, &["usage_based_billing", "usage_based"]) || flag(profile, &["usage_based"]);
-    summary.overdue = flag(plan, &["overdue", "payment_overdue", "billing_overdue"])
-        || flag(profile, &["overdue", "payment_overdue"]);
-    summary.account_too_young =
-        flag(plan, &["account_too_young", "too_young"]) || flag(profile, &["account_too_young"]);
-    summary.restricted = flag(plan, &["restricted", "model_access_restricted"])
+    summary.usage_based_billing = flag(
+        plan,
+        profile,
+        &[
+            "is_usage_based_billing_enabled",
+            "usage_based_billing",
+            "usage_based",
+        ],
+    );
+    summary.overdue = flag(
+        plan,
+        profile,
+        &[
+            "has_overdue_invoices",
+            "overdue",
+            "payment_overdue",
+            "billing_overdue",
+        ],
+    );
+    summary.account_too_young = flag(
+        plan,
+        profile,
+        &["is_account_too_young", "account_too_young", "too_young"],
+    );
+    summary.restricted = flag(plan, plan, &["restricted", "model_access_restricted"])
         || summary.plan.as_deref() == Some("restricted");
-    Some(summary)
+    summary
 }
 
-fn flag(value: &Value, keys: &[&str]) -> bool {
-    keys.iter()
-        .any(|key| value.get(*key).and_then(Value::as_bool) == Some(true))
+/// The first key that carries a boolean decides; the plan object is checked
+/// before the root, real key names before legacy ones (spec 70 §3.7.1 item 3).
+fn flag(plan: &Value, root: &Value, keys: &[&str]) -> bool {
+    [Some(plan), Some(root)]
+        .into_iter()
+        .flatten()
+        .find_map(|value| {
+            keys.iter()
+                .find_map(|key| value.get(*key).and_then(Value::as_bool))
+        })
+        .unwrap_or(false)
 }
 
 /// Integer fields accept JSON integers and decimal strings (Zed has shipped
@@ -428,16 +520,18 @@ fn apply_billing(report: &mut AccountStatusReport, billing: BillingSummary) {
     report.plan = billing.plan;
     report.used = billing.used.map(Value::from);
     report.limit = billing.limit.map(Value::from);
-    report.remaining = match (billing.limit, billing.used) {
-        (Some(limit), Some(used)) => Some(Value::from((limit - used).max(0))),
-        _ => None,
-    };
+    // `used` missing counts as 0 (spec 50 §8.2.1 item 5).
+    report.remaining = billing
+        .limit
+        .map(|limit| Value::from((limit - billing.used.unwrap_or(0)).max(0)));
     report.subscription_ends_at = billing.subscription_ends_at;
     report.usage_based_billing = billing.usage_based_billing;
     report.overdue = billing.overdue;
     report.account_too_young = billing.account_too_young;
 
-    match (billing.restricted, billing.limit) {
+    // A too-young account counts as restricted (spec 50 §8.2.1 item 2).
+    let restricted = billing.restricted || billing.account_too_young;
+    match (restricted, billing.limit) {
         (true, _) => {
             report.quota_state = "restricted";
             report.usable = false;
@@ -461,27 +555,38 @@ fn apply_billing(report: &mut AccountStatusReport, billing: BillingSummary) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::upstream::client::{BoxFuture, UpstreamRequest, UpstreamResponse, UpstreamStream};
+    use crate::upstream::client::{
+        BoxFuture, Endpoint, UpstreamRequest, UpstreamResponse, UpstreamStream,
+    };
 
+    const NOW: i64 = 1_762_300_000;
+    const TOKEN_EXP: i64 = 1_900_000_000;
+
+    /// The real `client/users/me` shape (spec 70 §3.7.1), fake data only.
     fn profile(plan: Value) -> Value {
         serde_json::json!({
             "default_organization_id": "org-1",
             "organizations": [{"id": "org-1", "is_personal": true}],
-            "plan_v3": plan,
+            "plan": plan,
         })
     }
 
     fn summary(plan: Value) -> BillingSummary {
-        parse_billing(&profile(plan)).unwrap()
+        parse_billing(&profile(plan))
     }
 
     #[test]
-    fn integer_limit_is_read_and_remaining_is_derived() {
+    fn real_shape_reads_every_billing_field() {
         let billing = summary(serde_json::json!({
-            "plan": "zed_pro",
-            "usage": {"model_requests": {"used": 12, "limit": 50}},
+            "plan_v2": "zed_student",
+            "plan": "zed_free",
+            "plan_v3": "zed_pro",
+            "has_overdue_invoices": true,
+            "is_account_too_young": false,
+            "is_usage_based_billing_enabled": true,
             "subscription_period": {"started_at": "2026-07-20T00:00:00Z",
                                     "ended_at": "2026-08-20T00:00:00Z"},
+            "usage": {"model_requests": {"used": 12, "limit": {"limited": 50}}},
         }));
         assert_eq!(billing.plan.as_deref(), Some("zed_pro"));
         assert_eq!(billing.used, Some(12));
@@ -490,6 +595,35 @@ mod tests {
             billing.subscription_ends_at.as_deref(),
             Some("2026-08-20T00:00:00Z")
         );
+        assert!(billing.overdue);
+        assert!(billing.usage_based_billing);
+        assert!(!billing.account_too_young);
+        assert!(!billing.restricted);
+    }
+
+    #[test]
+    fn real_flag_names_win_over_legacy_ones() {
+        // `is_account_too_young:false` wins over a stale legacy `too_young`.
+        let billing = summary(serde_json::json!({
+            "is_account_too_young": false,
+            "too_young": true,
+        }));
+        assert!(!billing.account_too_young);
+
+        // An empty plan name keeps looking down the chain.
+        let billing = summary(serde_json::json!({"plan_v3": "", "plan_v2": "zed_pro"}));
+        assert_eq!(billing.plan.as_deref(), Some("zed_pro"));
+    }
+
+    #[test]
+    fn integer_limit_is_read_and_remaining_is_derived() {
+        let billing = summary(serde_json::json!({
+            "plan_v3": "zed_pro",
+            "usage": {"model_requests": {"used": 12, "limit": 50}},
+        }));
+        assert_eq!(billing.plan.as_deref(), Some("zed_pro"));
+        assert_eq!(billing.used, Some(12));
+        assert_eq!(billing.limit, Some(50));
     }
 
     #[test]
@@ -504,6 +638,7 @@ mod tests {
     fn zero_and_missing_limits_mean_unmetered() {
         for limit in [
             serde_json::json!(0),
+            serde_json::json!(-5),
             serde_json::json!(null),
             serde_json::json!("0"),
         ] {
@@ -518,25 +653,56 @@ mod tests {
     }
 
     #[test]
-    fn older_plan_v2_is_accepted() {
+    fn old_shape_falls_back_when_there_is_no_top_level_plan_object() {
         let profile = serde_json::json!({
-            "plan_v2": {"plan": "zed_free", "usage": {"model_requests": {"used": 1, "limit": 5}}}
+            "plan_v2": {
+                "plan": "zed_free",
+                "usage": {"model_requests": {"used": 1, "limit": 5}},
+                "overdue": true,
+                "usage_based": true,
+                "account_too_young": false,
+            }
         });
-        let billing = parse_billing(&profile).unwrap();
+        let billing = parse_billing(&profile);
         assert_eq!(billing.plan.as_deref(), Some("zed_free"));
         assert_eq!(billing.limit, Some(5));
+        assert!(billing.overdue);
+        assert!(billing.usage_based_billing);
+        assert!(!billing.account_too_young);
+
+        // Root `plan_v3` wins over `plan_v2` in the old shape too.
+        let profile = serde_json::json!({
+            "plan_v2": {"plan": "zed_free"},
+            "plan_v3": {"plan": "zed_pro"},
+        });
+        assert_eq!(parse_billing(&profile).plan.as_deref(), Some("zed_pro"));
+
+        // A string `plan` is not the real shape: keep looking at the root.
+        let profile = serde_json::json!({
+            "plan": "pro",
+            "plan_v3": {"plan": "zed_pro"},
+        });
+        assert_eq!(parse_billing(&profile).plan.as_deref(), Some("zed_pro"));
     }
 
     #[test]
-    fn unreadable_billing_is_a_parse_failure_not_a_zero_quota() {
-        assert!(parse_billing(&serde_json::json!({})).is_none());
-        assert!(parse_billing(&serde_json::json!({"plan": "pro"})).is_none());
-        assert!(parse_billing(&serde_json::json!({"plan_v3": []})).is_none());
+    fn json_without_a_plan_object_is_plan_unknown_not_a_parse_failure() {
+        for profile in [
+            serde_json::json!({}),
+            serde_json::json!({"plan": "pro"}),
+            serde_json::json!({"plan_v3": []}),
+        ] {
+            let billing = parse_billing(&profile);
+            assert_eq!(billing.plan.as_deref(), Some("unknown"), "{profile}");
+            assert_eq!(billing.used, None);
+            assert_eq!(billing.limit, None);
+            assert!(!billing.overdue && !billing.account_too_young);
+            assert!(!billing.restricted);
+        }
     }
 
-    #[test]
-    fn quota_state_covers_available_exhausted_restricted_and_unmetered() {
-        let mut report = AccountStatusReport {
+    fn blank_report() -> AccountStatusReport {
+        AccountStatusReport {
             name: "a".into(),
             user_id: "1".into(),
             current: false,
@@ -563,7 +729,36 @@ mod tests {
             overdue: false,
             account_too_young: false,
             error: None,
-        };
+        }
+    }
+
+    #[test]
+    fn account_too_young_is_restricted_and_unusable() {
+        let mut report = blank_report();
+        apply_billing(
+            &mut report,
+            summary(serde_json::json!({
+                "plan_v3": "zed_pro",
+                "has_overdue_invoices": true,
+                "is_account_too_young": true,
+                "is_usage_based_billing_enabled": true,
+                "usage": {"model_requests": {"used": 12, "limit": {"limited": 50}}},
+            })),
+        );
+        assert_eq!(report.quota_state, "restricted");
+        assert!(!report.usable);
+        assert!(report.account_too_young);
+        assert!(report.overdue);
+        assert!(report.usage_based_billing);
+        assert_eq!(report.plan.as_deref(), Some("zed_pro"));
+        assert_eq!(report.used, Some(Value::from(12)));
+        assert_eq!(report.limit, Some(Value::from(50)));
+        assert_eq!(report.remaining, Some(Value::from(38)));
+    }
+
+    #[test]
+    fn quota_state_covers_available_exhausted_restricted_and_unmetered() {
+        let mut report = blank_report();
         let cases = [
             (
                 serde_json::json!({"usage": {"model_requests": {"used": 1, "limit": 10}}}),
@@ -583,6 +778,11 @@ mod tests {
             (
                 serde_json::json!({"usage": {"model_requests": {"used": 1}}}),
                 "unmetered",
+                true,
+            ),
+            (
+                serde_json::json!({"usage": {"model_requests": {"limit": 10}}}),
+                "available",
                 true,
             ),
             (
@@ -609,12 +809,54 @@ mod tests {
             })),
         );
         assert_eq!(report.remaining, Some(Value::from(0)));
+        // A missing `used` counts as 0 for `remaining` (spec 50 §8.2.1 item 5).
+        apply_billing(
+            &mut report,
+            summary(serde_json::json!({
+                "usage": {"model_requests": {"limit": 10}}
+            })),
+        );
+        assert_eq!(report.remaining, Some(Value::from(10)));
+        assert_eq!(report.used, None);
     }
 
-    /// Fake upstream: users/me and llm_tokens succeed.
+    fn jwt(exp: i64) -> String {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine as _;
+        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#);
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#).as_bytes());
+        format!("{header}.{payload}.sig")
+    }
+
+    /// Fake upstream; records which endpoints were called.
     struct FakeUpstream {
-        users_me: Value,
+        users_me_status: u16,
+        users_me_body: Vec<u8>,
         token_status: u16,
+        calls: std::sync::Mutex<Vec<Endpoint>>,
+    }
+
+    impl FakeUpstream {
+        fn new(users_me_status: u16, users_me: Value, token_status: u16) -> Self {
+            Self::raw(
+                users_me_status,
+                &serde_json::to_vec(&users_me).unwrap(),
+                token_status,
+            )
+        }
+
+        fn raw(users_me_status: u16, users_me_body: &[u8], token_status: u16) -> Self {
+            Self {
+                users_me_status,
+                users_me_body: users_me_body.to_vec(),
+                token_status,
+                calls: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn calls(&self) -> Vec<Endpoint> {
+            self.calls.lock().unwrap().clone()
+        }
     }
 
     impl UpstreamClient for FakeUpstream {
@@ -622,26 +864,20 @@ mod tests {
             &'a self,
             request: UpstreamRequest,
         ) -> BoxFuture<'a, Result<UpstreamResponse, GatewayError>> {
-            Box::pin(async move {
-                match request.endpoint {
-                    crate::upstream::client::Endpoint::UserMe => Ok(UpstreamResponse {
-                        status: 200,
-                        body: serde_json::to_vec(&self.users_me).unwrap(),
-                    }),
-                    crate::upstream::client::Endpoint::LlmTokens => Ok(UpstreamResponse {
-                        status: self.token_status,
-                        body: if self.token_status == 200 {
-                            br#"{"token":"a.b.c"}"#.to_vec()
-                        } else {
-                            br#"{"error":"nope"}"#.to_vec()
-                        },
-                    }),
-                    _ => Ok(UpstreamResponse {
-                        status: 404,
-                        body: Vec::new(),
-                    }),
+            self.calls.lock().unwrap().push(request.endpoint);
+            let status = match request.endpoint {
+                Endpoint::UserMe => self.users_me_status,
+                Endpoint::LlmTokens => self.token_status,
+                _ => 404,
+            };
+            let body = match request.endpoint {
+                Endpoint::UserMe => self.users_me_body.clone(),
+                Endpoint::LlmTokens if self.token_status == 200 => {
+                    format!(r#"{{"token":"{}"}}"#, jwt(TOKEN_EXP)).into_bytes()
                 }
-            })
+                _ => Vec::new(),
+            };
+            Box::pin(async move { Ok(UpstreamResponse { status, body }) })
         }
 
         fn execute_stream<'a>(
@@ -706,24 +942,88 @@ mod tests {
         let dir = temp_dir("status");
         let store = store_with_account(&dir);
 
-        let ok = FakeUpstream {
-            users_me: profile(serde_json::json!({
-                "plan": "zed_pro",
-                "usage": {"model_requests": {"used": 12, "limit": 50}},
+        let ok = FakeUpstream::new(
+            200,
+            profile(serde_json::json!({
+                "plan_v3": "zed_pro",
+                "has_overdue_invoices": true,
+                "is_account_too_young": false,
+                "is_usage_based_billing_enabled": false,
+                "usage": {"model_requests": {"used": 12, "limit": {"limited": 50}}},
                 "subscription_period": {"ended_at": "2026-08-20T00:00:00Z"},
             })),
-            token_status: 200,
-        };
-        let body = String::from_utf8(status_body(&store, &ok, 1_762_300_000).await).unwrap();
+            200,
+        );
+        let body = String::from_utf8(status_body(&store, &ok, NOW).await).unwrap();
         assert!(body.starts_with(r#"{"checked_at":1762300000,"accounts":[{"name":"alice","user_id":"42","current":true,"scheduler_healthy":true,"cooldown_s":0,"last_status":0,"model_state":"unchecked","model_ok":false,"model_checked_at":0,"model_latency_ms":0,"orb_configured":false,"#), "{body}");
-        assert!(body.contains(r#""check_ok":true,"token_ok":true,"billing_ok":true,"usable":true,"quota_state":"available","plan":"zed_pro","used":12,"limit":50,"remaining":38,"subscription_ends_at":"2026-08-20T00:00:00Z","usage_based_billing":false,"overdue":false,"account_too_young":false}"#), "{body}");
+        assert!(body.contains(r#""check_ok":true,"token_ok":true,"billing_ok":true,"usable":true,"quota_state":"available","plan":"zed_pro","used":12,"limit":50,"remaining":38,"subscription_ends_at":"2026-08-20T00:00:00Z","usage_based_billing":false,"overdue":true,"account_too_young":false}"#), "{body}");
         assert!(serde_json::from_str::<Value>(&body).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
 
-        // A dead credential stops at the token fields (spec 70 §3.7).
-        let dead = FakeUpstream {
-            users_me: profile(serde_json::json!({})),
-            token_status: 401,
-        };
+        // A second poll reuses the fresh token: one users/me request only
+        // (spec 70 §3.7).
+        let body = String::from_utf8(status_body(&store, &ok, NOW + 1).await).unwrap();
+        assert!(body.contains(r#""token_ok":true"#), "{body}");
+        assert_eq!(
+            ok.calls().len(),
+            4,
+            "users/me + llm_tokens + users/me, then users/me only"
+        );
+    }
+
+    /// A too-young account in the real shape must come back restricted and
+    /// unusable (spec 50 §8.2.1 item 2).
+    #[tokio::test]
+    async fn status_body_marks_a_too_young_account_restricted() {
+        let dir = temp_dir("too-young");
+        let store = store_with_account(&dir);
+        let young = FakeUpstream::new(
+            200,
+            profile(serde_json::json!({
+                "plan_v3": "zed_pro",
+                "has_overdue_invoices": false,
+                "is_account_too_young": true,
+                "is_usage_based_billing_enabled": true,
+                "usage": {"model_requests": {"used": 12, "limit": {"limited": 50}}},
+            })),
+            200,
+        );
+        let body = String::from_utf8(status_body(&store, &young, NOW).await).unwrap();
+        assert!(body.contains(r#""check_ok":true,"token_ok":true,"billing_ok":true,"usable":false,"quota_state":"restricted","plan":"zed_pro","used":12,"limit":50,"remaining":38,"subscription_ends_at":null,"usage_based_billing":true,"overdue":false,"account_too_young":true}"#), "{body}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A billing outage must not mark a working account as unusable
+    /// (spec 70 §3.7, spec 50 §8.2.1 item 6).
+    #[tokio::test]
+    async fn billing_failure_keeps_the_account_usable() {
+        let dir = temp_dir("billing-down");
+        let store = store_with_account(&dir);
+        // Warm the token cache first: an exchange needs users/me for the
+        // organization id, so a cold cache would legitimately fail.
+        let warm = FakeUpstream::new(200, profile(serde_json::json!({})), 200);
+        let _ = status_body(&store, &warm, NOW).await;
+        let down = FakeUpstream::new(503, serde_json::json!({}), 200);
+        let body = String::from_utf8(status_body(&store, &down, NOW).await).unwrap();
+        assert!(body.contains(r#""check_ok":false,"token_ok":true,"billing_ok":false,"usable":true,"quota_state":"unknown","plan":"unknown","used":null,"limit":null,"remaining":null,"subscription_ends_at":null,"usage_based_billing":false,"overdue":false,"account_too_young":false,"error":"billing_check_failed"}"#), "{body}");
+
+        // A 200 whose body is not JSON is a parse failure, not an outage.
+        let garbage = FakeUpstream::raw(200, b"<html>nope</html>", 200);
+        let body = String::from_utf8(status_body(&store, &garbage, NOW).await).unwrap();
+        assert!(body.contains(r#""token_ok":true,"billing_ok":false,"usable":true,"quota_state":"unknown","plan":"unknown""#), "{body}");
+        assert!(
+            body.contains(r#""error":"invalid_billing_response""#),
+            "{body}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A dead credential ends the entry at the token fields (spec 70 §3.7).
+    #[tokio::test]
+    async fn dead_credential_reports_llm_token_refresh_failed() {
+        let dir = temp_dir("dead");
+        let store = store_with_account(&dir);
+        let dead = FakeUpstream::new(200, profile(serde_json::json!({})), 401);
         let body = String::from_utf8(status_body(&store, &dead, 5).await).unwrap();
         assert!(body.contains(r#""check_ok":false,"token_ok":false,"billing_ok":false,"usable":false,"quota_state":"unavailable","error":"llm_token_refresh_failed"}"#), "{body}");
         assert!(!body.contains("\"plan\""), "{body}");
