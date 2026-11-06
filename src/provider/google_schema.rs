@@ -207,6 +207,7 @@ fn convert(map: &mut Map<String, Value>, context: &mut Context, depth: usize) {
     consistency(map);
     clean_required(map);
     clean_children(map, context, depth);
+    ensure_items(map);
     map.retain(|key, _| ALLOWED_KEYS.contains(&key.as_str()));
 }
 
@@ -289,30 +290,91 @@ fn infer_type(map: &Map<String, Value>) -> String {
     }
 }
 
-/// Step 2 (enum side): Gemini only accepts string enums; non-string scalars are
-/// stringified and duplicates are removed in order.
+/// Step 10 (enum side, spec 22 §6.4.1): Gemini enums are non-empty string
+/// arrays. Empty strings are dropped; a non-string element, an empty result or
+/// a non-array value deletes the whole key, keeping dropped scalar candidates
+/// visible in `description`.
 fn normalize_enum(map: &mut Map<String, Value>) {
-    let Some(value) = map.get("enum").cloned() else {
+    let Some(value) = map.remove("enum") else {
         return;
     };
     let Value::Array(items) = value else {
-        map.remove("enum");
+        drop_enum_format(map);
         return;
     };
-    let mut out: Vec<Value> = Vec::with_capacity(items.len());
-    for item in items {
-        let text = match item {
-            Value::String(text) => text,
-            Value::Null => "null".to_string(),
-            Value::Bool(flag) => flag.to_string(),
-            Value::Number(number) => number.to_string(),
-            other => other.to_string(),
-        };
-        if !out.iter().any(|kept| kept.as_str() == Some(text.as_str())) {
-            out.push(Value::String(text));
+    let mut kept: Vec<Value> = Vec::new();
+    let mut unrepresentable = false;
+    for item in &items {
+        match item {
+            Value::String(text) if text.is_empty() => {}
+            Value::String(text) => {
+                if !kept
+                    .iter()
+                    .any(|entry| entry.as_str() == Some(text.as_str()))
+                {
+                    kept.push(Value::String(text.clone()));
+                }
+            }
+            _ => unrepresentable = true,
         }
     }
-    map.insert("enum".to_string(), Value::Array(out));
+    if unrepresentable {
+        // Numeric/boolean candidates (including `const` of those types) stay
+        // visible to the model through `description` (spec 22 §6.4.1).
+        if items
+            .iter()
+            .all(|item| matches!(item, Value::Number(_) | Value::Bool(_)))
+        {
+            append_allowed_values(map, &items);
+        }
+        drop_enum_format(map);
+        return;
+    }
+    if kept.is_empty() {
+        drop_enum_format(map);
+        return;
+    }
+    map.insert("enum".to_string(), Value::Array(kept));
+}
+
+/// `format:"enum"` only carries meaning next to an `enum` (spec 22 §6.4.1).
+fn drop_enum_format(map: &mut Map<String, Value>) {
+    if map.get("format").and_then(Value::as_str) == Some("enum") {
+        map.remove("format");
+    }
+}
+
+/// Keep values that Gemini cannot express as enum candidates visible to the
+/// model, appending after an existing description (spec 22 §6.4.1).
+fn append_allowed_values(map: &mut Map<String, Value>, values: &[Value]) {
+    let rendered: Vec<String> = values.iter().map(Value::to_string).collect();
+    let note = format!("Allowed values: {}", rendered.join(", "));
+    let description = match map.get("description").and_then(Value::as_str) {
+        Some(existing) => format!("{existing}\n{note}"),
+        None => note,
+    };
+    map.insert("description".to_string(), Value::String(description));
+}
+
+/// Step 10 (array side, spec 22 §6.4.2): every `type: array` node carries an
+/// object `items` with a `type`. A missing or empty schema becomes the loose
+/// object schema; keys the client did provide are kept.
+fn ensure_items(map: &mut Map<String, Value>) {
+    if map.get("type").and_then(Value::as_str) != Some("array") {
+        return;
+    }
+    if !map.get("items").map(Value::is_object).unwrap_or(false) {
+        map.insert("items".to_string(), degraded());
+        return;
+    }
+    if let Some(items) = map.get_mut("items").and_then(Value::as_object_mut) {
+        if items.get("type").and_then(Value::as_str).is_none() {
+            items.insert("type".to_string(), Value::String("object".to_string()));
+            items
+                .entry("properties".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+        }
+    }
 }
 
 /// Step 6: keep `type` and the structural keywords consistent.
@@ -523,9 +585,15 @@ mod tests {
             ),
             r#"{"type":"object","properties":{"format":{"type":"string"},"$schema":{"type":"boolean"}}}"#
         );
+        // Non-string enums are not stringified (spec 22 §6.4.1); the candidates
+        // survive in `description` instead.
         assert_eq!(
             rendered(serde_json::json!({"enum": [1, true]})),
-            r#"{"enum":["1","true"]}"#
+            r#"{"description":"Allowed values: 1, true"}"#
+        );
+        assert_eq!(
+            rendered(serde_json::json!({"enum": [1, true], "type": "integer"})),
+            r#"{"type":"integer","description":"Allowed values: 1, true"}"#
         );
         // `required` alone implies an object (rule 6) before the name filter runs.
         assert_eq!(
@@ -567,9 +635,10 @@ mod tests {
             rendered(serde_json::json!({"type": "dict"})),
             r#"{"type":"object"}"#
         );
+        // The alias resolves to `array` first, so §6.4.2 then supplies `items`.
         assert_eq!(
             rendered(serde_json::json!({"type": "list"})),
-            r#"{"type":"array"}"#
+            r#"{"type":"array","items":{"type":"object","properties":{}}}"#
         );
         assert_eq!(
             rendered(serde_json::json!({"type": "wat"})),
@@ -590,11 +659,249 @@ mod tests {
     }
 
     #[test]
-    fn enum_deduplicates_after_stringification() {
+    fn string_enums_are_deduplicated_and_filtered() {
         assert_eq!(
-            rendered(serde_json::json!({"type": "string", "enum": ["a", "a", 1, "1"]})),
-            r#"{"type":"string","enum":["a","1"]}"#
+            rendered(serde_json::json!({"type": "string", "enum": ["a", "a", "b", ""]})),
+            r#"{"type":"string","enum":["a","b"]}"#
         );
+    }
+
+    #[test]
+    fn empty_string_enum_entries_are_dropped() {
+        assert_eq!(
+            rendered(serde_json::json!({"type": "string", "enum": ["read", "write", ""]})),
+            r#"{"type":"string","enum":["read","write"]}"#
+        );
+        // Only zero-length strings are dropped; whitespace is a real value.
+        assert_eq!(
+            rendered(serde_json::json!({"type": "string", "enum": ["", " " ]})),
+            r#"{"type":"string","enum":[" "]}"#
+        );
+        for empty in [
+            serde_json::json!({"type": "string", "enum": []}),
+            serde_json::json!({"type": "string", "enum": [""]}),
+            serde_json::json!({"type": "string", "enum": ["", ""]}),
+        ] {
+            assert_eq!(rendered(empty), r#"{"type":"string"}"#);
+        }
+    }
+
+    #[test]
+    fn non_string_enums_are_dropped_and_candidates_kept_in_description() {
+        assert_eq!(
+            rendered(serde_json::json!({"type": "integer", "enum": [1, 2, 3]})),
+            r#"{"type":"integer","description":"Allowed values: 1, 2, 3"}"#
+        );
+        assert_eq!(
+            rendered(serde_json::json!({"type": "boolean", "enum": [true, false]})),
+            r#"{"type":"boolean","description":"Allowed values: true, false"}"#
+        );
+        // An existing description is extended, never replaced.
+        assert_eq!(
+            rendered(serde_json::json!({"type": "integer", "description": "n", "enum": [1, 2]})),
+            r#"{"type":"integer","description":"n\nAllowed values: 1, 2"}"#
+        );
+        // Mixed string/non-string and null elements drop the whole enum; `type` stays.
+        assert_eq!(
+            rendered(serde_json::json!({"type": "string", "enum": ["a", 1]})),
+            r#"{"type":"string"}"#
+        );
+        assert_eq!(
+            rendered(serde_json::json!({"type": "string", "enum": [null]})),
+            r#"{"type":"string"}"#
+        );
+        // A non-array enum and a dangling `format:"enum"` both disappear.
+        assert_eq!(
+            rendered(serde_json::json!({"type": "string", "enum": "a", "format": "enum"})),
+            r#"{"type":"string"}"#
+        );
+    }
+
+    #[test]
+    fn const_values_follow_the_enum_rules() {
+        assert_eq!(rendered(serde_json::json!({"const": ""})), r#"{}"#);
+        assert_eq!(
+            rendered(serde_json::json!({"const": "a"})),
+            r#"{"enum":["a"]}"#
+        );
+        assert_eq!(
+            rendered(serde_json::json!({"const": 1})),
+            r#"{"description":"Allowed values: 1"}"#
+        );
+        assert_eq!(
+            rendered(serde_json::json!({"type": "string", "const": ""})),
+            r#"{"type":"string"}"#
+        );
+    }
+
+    #[test]
+    fn arrays_get_a_loose_items_schema() {
+        let loose = r#"{"type":"array","items":{"type":"object","properties":{}}}"#;
+        assert_eq!(rendered(serde_json::json!({"type": "array"})), loose);
+        assert_eq!(
+            rendered(serde_json::json!({"type": "array", "items": {}})),
+            loose
+        );
+        // Existing keys survive the patch-up.
+        assert_eq!(
+            rendered(serde_json::json!({"type": "array", "items": {"description": "note"}})),
+            r#"{"type":"array","items":{"type":"object","description":"note","properties":{}}}"#
+        );
+        for invalid in [
+            serde_json::json!(true),
+            serde_json::json!("x"),
+            serde_json::json!([1]),
+            serde_json::json!(null),
+        ] {
+            assert_eq!(
+                rendered(serde_json::json!({"type": "array", "items": invalid})),
+                loose
+            );
+        }
+        // An explicit item type is client intent and stays untouched.
+        assert_eq!(
+            rendered(serde_json::json!({"type": "array", "items": {"type": "string"}})),
+            r#"{"type":"array","items":{"type":"string"}}"#
+        );
+        // Nested bare arrays are patched all the way down.
+        assert_eq!(
+            rendered(serde_json::json!({"type": "array", "items": {"type": "array"}})),
+            r#"{"type":"array","items":{"type":"array","items":{"type":"object","properties":{}}}}"#
+        );
+        // `items` on a non-array node is still dropped (spec 22 §6.4 item 6).
+        assert_eq!(
+            rendered(serde_json::json!({"type": "object", "items": {"type": "string"}})),
+            r#"{"type":"object"}"#
+        );
+        // Items that lose their enum still receive the loose object shape.
+        assert_eq!(
+            rendered(serde_json::json!({"type": "array", "items": {"enum": [1, 2]}})),
+            r#"{"type":"array","items":{"type":"object","description":"Allowed values: 1, 2","properties":{}}}"#
+        );
+        // Exact fixture from spec 22 §6.4.2: a nested bare array under `properties`.
+        assert_eq!(
+            rendered(serde_json::json!({"properties": {"tags": {"type": "array"}}})),
+            r#"{"type":"object","properties":{"tags":{"type":"array","items":{"type":"object","properties":{}}}}}"#
+        );
+    }
+
+    #[test]
+    fn enum_and_items_rules_reach_nested_and_inlined_nodes() {
+        assert_eq!(
+            rendered(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": ["read", "write", ""]},
+                    "count": {"type": "integer", "enum": [1, 2]},
+                    "tags": {"type": "array"},
+                    "flags": {"type": "array", "items": {}}
+                }
+            })),
+            r#"{"type":"object","properties":{"mode":{"type":"string","enum":["read","write"]},"count":{"type":"integer","description":"Allowed values: 1, 2"},"tags":{"type":"array","items":{"type":"object","properties":{}}},"flags":{"type":"array","items":{"type":"object","properties":{}}}}}"#
+        );
+        assert_eq!(
+            rendered(serde_json::json!({
+                "type": "array",
+                "items": {"type": "array", "items": {"type": "string", "enum": ["x", ""]}}
+            })),
+            r#"{"type":"array","items":{"type":"array","items":{"type":"string","enum":["x"]}}}"#
+        );
+        assert_eq!(
+            rendered(serde_json::json!({
+                "anyOf": [
+                    {"type": "string", "enum": [""]},
+                    {"type": "integer", "enum": [1, 2]},
+                    {"type": "array"}
+                ]
+            })),
+            r#"{"anyOf":[{"type":"string"},{"type":"integer","description":"Allowed values: 1, 2"},{"type":"array","items":{"type":"object","properties":{}}}]}"#
+        );
+        assert_eq!(
+            rendered(serde_json::json!({
+                "$ref": "#/$defs/X",
+                "$defs": {
+                    "X": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "enum": ["a", ""]},
+                            "rows": {"type": "array"}
+                        }
+                    }
+                }
+            })),
+            r#"{"type":"object","properties":{"kind":{"type":"string","enum":["a"]},"rows":{"type":"array","items":{"type":"object","properties":{}}}}}"#
+        );
+    }
+
+    #[test]
+    fn cleaned_schemas_never_contain_illegal_enums_or_bare_arrays() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "mode": {"type": "string", "enum": ["read", "write", ""]},
+                "empty": {"type": "string", "enum": []},
+                "count": {"type": "integer", "enum": [1, 2, 3]},
+                "flag": {"type": "boolean", "enum": [true, false]},
+                "value": {"const": ""},
+                "nested": {"type": "object", "properties": {"inner": {"type": "array"}}},
+                "rows": {"type": "array", "items": {}},
+                "choice": {"anyOf": [{"type": "array"}, {"type": "string", "enum": [""]}]},
+                "linked": {"$ref": "#/$defs/L"}
+            },
+            "$defs": {"L": {"type": "array", "items": {"type": "integer", "enum": [1]}}}
+        });
+        let cleaned = clean_schema(&schema);
+        assert_legal(&cleaned);
+        let text = cleaned.to_string();
+        for banned in [
+            r#""enum":[]"#,
+            r#""enum":[""]"#,
+            r#"{"type":"array"}"#,
+            "$ref",
+            "$defs",
+        ] {
+            assert!(!text.contains(banned), "{banned} leaked: {text}");
+        }
+    }
+
+    /// Output assertion from spec 22 §6.4.1/§6.4.2: every `enum` is a non-empty
+    /// array of non-empty strings, and every `type: array` node has an object
+    /// `items` with a `type`.
+    fn assert_legal(schema: &Value) {
+        let Some(map) = schema.as_object() else {
+            panic!("schema node is not an object: {schema}");
+        };
+        if let Some(enumeration) = map.get("enum") {
+            let items = enumeration.as_array().expect("enum is an array");
+            assert!(!items.is_empty(), "empty enum in {schema}");
+            for item in items {
+                let text = item.as_str().expect("enum item is a string");
+                assert!(!text.is_empty(), "empty enum entry in {schema}");
+            }
+        }
+        if map.get("type").and_then(Value::as_str) == Some("array") {
+            let items = map
+                .get("items")
+                .and_then(Value::as_object)
+                .expect("array without object items");
+            assert!(
+                items.get("type").and_then(Value::as_str).is_some(),
+                "array items without type: {schema}"
+            );
+        }
+        if let Some(properties) = map.get("properties").and_then(Value::as_object) {
+            for sub in properties.values() {
+                assert_legal(sub);
+            }
+        }
+        if let Some(items) = map.get("items") {
+            assert_legal(items);
+        }
+        if let Some(members) = map.get("anyOf").and_then(Value::as_array) {
+            for member in members {
+                assert_legal(member);
+            }
+        }
     }
 
     #[test]
