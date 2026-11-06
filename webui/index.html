@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>zed-proxy console</title>
+    <meta
+      name="description"
+      content="Local console for the zed-proxy gateway: accounts, model catalogue, diagnostics, routes and client snippets."
+    />
+  </head>
+  <body>
+    <p id="boot-note" class="boot-note">
+      <strong>The console script did not start.</strong> Reload the page; if this message stays,
+      rebuild the interface bundle (<code>webui/dist/index.html</code>).
+      <span lang="zh-CN"
+        ><strong>控制台脚本没有启动。</strong>请刷新页面；如果这条提示仍在，重新构建界面产物。</span
+      >
+    </p>
+    <div class="shell" id="shell" hidden>
+      <a class="skip-link" href="#content">Skip to content / 跳到正文</a>
+      <aside class="rail" aria-label="Console overview">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">zp</span>
+          <div>
+            <p class="brand-name">zed-proxy</p>
+            <p class="brand-sub" id="brand-sub"></p>
+          </div>
+        </div>
+        <section class="rail-block" aria-labelledby="overview-title">
+          <h2 class="rail-label" id="overview-title"></h2>
+          <div id="overview"></div>
+        </section>
+        <nav class="rail-nav" id="nav" aria-label="Pages"></nav>
+        <div class="rail-foot" id="rail-foot"></div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <div class="trail" id="trail"></div>
+          <div class="topbar-meta">
+            <span class="clock" id="clock"></span>
+            <span class="port" id="port"></span>
+            <div class="lang" id="lang" role="group"></div>
+          </div>
+        </header>
+        <div class="toast" id="toast" role="status" aria-live="polite"></div>
+        <main id="content" tabindex="-1">
+          <section class="page" id="page-accounts" data-page="accounts" aria-labelledby="accounts-title"></section>
+          <section class="page" id="page-models" data-page="models" aria-labelledby="models-title" hidden></section>
+          <section class="page" id="page-health" data-page="health" aria-labelledby="health-title" hidden></section>
+          <section class="page" id="page-endpoints" data-page="endpoints" aria-labelledby="endpoints-title" hidden></section>
+          <section class="page" id="page-integration" data-page="integration" aria-labelledby="integration-title" hidden></section>
+        </main>
+      </div>
+    </div>
+
+    <dialog class="dialog" id="dialog" aria-labelledby="dialog-title">
+      <form class="dialog-form" id="dialog-form" novalidate>
+        <h2 class="dialog-title" id="dialog-title"></h2>
+        <div id="dialog-body"></div>
+        <div class="dialog-actions" id="dialog-actions"></div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
