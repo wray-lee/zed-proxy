@@ -331,20 +331,33 @@ fn portal_base() -> String {
     PORTAL_BASE.to_string()
 }
 
-fn portal_client() -> &'static reqwest::Client {
-    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        let mut builder = reqwest::Client::builder()
-            .connect_timeout(PORTAL_TIMEOUT)
-            .timeout(PORTAL_TIMEOUT);
-        if let Some(proxy) = crate::config::ProxyConfig::from_env() {
-            let url = format!("{}://{}:{}", proxy.scheme, proxy.host, proxy.port);
-            if let Ok(proxy) = reqwest::Proxy::all(url) {
-                builder = builder.proxy(proxy);
-            }
-        }
-        builder.build().unwrap_or_default()
-    })
+fn portal_client() -> Result<&'static reqwest::Client, OrbError> {
+    // A build failure is reported and never silently replaced by a default
+    // client that would lose the 10 s limits and the proxy (spec 65 §2.3).
+    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+    CLIENT
+        .get_or_init(build_portal_client)
+        .as_ref()
+        .map_err(|_| OrbError::FetchFailed)
+}
+
+fn build_portal_client() -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(PORTAL_TIMEOUT)
+        .timeout(PORTAL_TIMEOUT)
+        // A portal redirect must surface as a non-2xx classification instead of
+        // a second request that would carry the token and Referer cross-host
+        // (spec 65 §2.4).
+        .redirect(reqwest::redirect::Policy::none())
+        .referer(false);
+    if let Some(proxy) = crate::config::ProxyConfig::from_env() {
+        let url = format!("{}://{}:{}", proxy.scheme, proxy.host, proxy.port);
+        let proxy = reqwest::Proxy::all(&url).map_err(|err| format!("invalid proxy: {err}"))?;
+        builder = builder.proxy(proxy);
+    }
+    builder
+        .build()
+        .map_err(|err| format!("cannot build Orb HTTP client: {err}"))
 }
 
 /// The `Referer` is the pasted link unless it cannot travel as a header
@@ -361,7 +374,7 @@ fn referer_for(link: &str) -> String {
 }
 
 async fn get_json(url: &str, referer: &str, non_2xx: OrbError) -> Result<Value, OrbError> {
-    let response = portal_client()
+    let response = portal_client()?
         .get(url)
         .header(reqwest::header::USER_AGENT, BROWSER_USER_AGENT)
         .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
@@ -1092,6 +1105,116 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(credit, Credit::Err(OrbError::InvalidLink));
+    }
+
+    // ---- no redirect following, no Referer leak (spec 65 §2.4, review #1) ----
+
+    /// Listener that records every request it receives and answers with a fixed
+    /// response (a redirect or an empty JSON object).
+    struct RedirectTrap {
+        base: String,
+        hits: Arc<AtomicUsize>,
+        requests: Arc<Mutex<Vec<String>>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for RedirectTrap {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    impl RedirectTrap {
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().unwrap().clone()
+        }
+        fn hits(&self) -> usize {
+            self.hits.load(Ordering::SeqCst)
+        }
+    }
+
+    async fn trap_listener(location: Option<String>) -> RedirectTrap {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let counter = hits.clone();
+        let recorded = requests.clone();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 1024];
+                loop {
+                    let read = socket.read(&mut chunk).await.unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&chunk[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                counter.fetch_add(1, Ordering::SeqCst);
+                recorded
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&request).into_owned());
+                let reply = match &location {
+                    Some(location) => format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    ),
+                    None => {
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                            .to_string()
+                    }
+                };
+                let _ = socket.write_all(reply.as_bytes()).await;
+                let _ = socket.flush().await;
+            }
+        });
+        RedirectTrap {
+            base: format!("http://{address}"),
+            hits,
+            requests,
+            task,
+        }
+    }
+
+    /// A link aimed at the trap's own host; the portal base is the trap too, so
+    /// a followed redirect would reach the second listener.
+    fn trap_link(base: &str) -> String {
+        format!("{base}/?token=FAKE-ORB-TOKEN-NOT-REAL")
+    }
+
+    #[tokio::test]
+    async fn portal_redirect_is_not_followed_and_leaks_nothing() {
+        let target = trap_listener(None).await;
+        let attacker = format!("{}/collect", target.base);
+        let first = trap_listener(Some(attacker)).await;
+        let link = trap_link(&first.base);
+        let credit = fetch_balance_at(&first.base, &link, 1).await.unwrap();
+        // The first request's non-2xx (here a 302) maps to invalid_link
+        // (spec 65 §2.4).
+        assert_eq!(credit, Credit::Err(OrbError::InvalidLink));
+        assert_eq!(first.hits(), 1, "exactly one request");
+        assert_eq!(target.hits(), 0, "the redirect target is never contacted");
+        let recorded = first.requests().join("\n").to_ascii_lowercase();
+        assert!(
+            recorded.contains("token=fake-orb-token-not-real"),
+            "{recorded}"
+        );
+        // The intentional browser-simulating Referer to the portal itself is
+        // still sent (spec 65 §2.2); only reqwest's automatic one is off.
+        assert!(recorded.contains("referer: "), "{recorded}");
+        // Nothing was sent to the second listener, so no Referer escaped, and
+        // the outward error never repeats the token.
+        assert!(target.requests().is_empty());
+        let json = credit_json(&credit);
+        assert!(!json.contains("FAKE-ORB-TOKEN"), "{json}");
     }
 
     // ---- forced refresh (spec 65 §6) ----

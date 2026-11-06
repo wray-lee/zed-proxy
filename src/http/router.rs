@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{header, HeaderValue, Method, Request, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::Response;
@@ -57,7 +57,13 @@ pub fn build_router(state: AppState) -> Router {
         // variants (spec 70 §2.1).
         .fallback(any(fallback_handler));
 
+    // `Bytes` extractors would reject at axum's default 2 MiB; the server
+    // already reads only the declared `Content-Length` (capped at 16 MiB), so
+    // this raises the extractor cap to the same value without unbounded reads.
     routes
+        .layer(DefaultBodyLimit::max(
+            super::body::MAX_REQUEST_BODY as usize,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), entry_guard))
         .with_state(state)
 }

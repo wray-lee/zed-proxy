@@ -21,7 +21,8 @@ pub const MAX_ACCOUNT_FIELD_BYTES: usize = 256;
 pub const MAX_ACCOUNTS_FILE_BYTES: u64 = 4 * 1024 * 1024;
 pub const ACCOUNTS_FILE: &str = "accounts.json";
 pub const ACTIVE_ACCOUNT_FILE: &str = "active_account.txt";
-/// Same-directory temp files used by every atomic write (spec 50 §3.1, §4).
+/// Prefixes of the same-directory temp files used by every atomic write; each
+/// write appends a random suffix (spec 50 §3.1, §4).
 const ACCOUNTS_TEMP_FILE: &str = ".accounts.json.tmp";
 const ACTIVE_TEMP_FILE: &str = ".active_account.txt.tmp";
 
@@ -531,27 +532,68 @@ fn push_value(out: &mut String, value: &Value) {
     }
 }
 
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+/// Refuse to write through a path that is a symlink (spec 50 §3.1 item 6);
+/// `symlink_metadata` does not follow it, unlike `metadata`.
+fn reject_symlink(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "refusing to write through a symbolic link",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Create the temp file exclusively: a stale 0644 or symlinked file with the
+/// same name must never be reused and inherit its permissions (spec 50 §3.1
+/// item 6).
+fn create_private(path: &Path) -> io::Result<File> {
+    reject_symlink(path)?;
     let mut options = OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(path)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    Ok(())
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // The mode above is filtered by the umask; the fd-level call is not.
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
 }
 
-/// Write `path` atomically: same-directory 0600 temp file, then `rename`.
-/// On any failure the temp file is removed and the original stays untouched
-/// (spec 50 §3.1 item 6).
-fn atomic_write(dir: &Path, temp_name: &str, final_name: &str, bytes: &[u8]) -> io::Result<()> {
-    let temp = dir.join(temp_name);
+/// Write `path` atomically: unique same-directory 0600 temp file, then
+/// `rename`. On any failure the temp file is removed and the original stays
+/// untouched (spec 50 §3.1 item 6).
+fn atomic_write(dir: &Path, temp_prefix: &str, final_name: &str, bytes: &[u8]) -> io::Result<()> {
+    use rand::Rng;
+    let suffix: u64 = rand::thread_rng().gen();
+    let temp = dir.join(format!("{temp_prefix}.{suffix:016x}"));
     let final_path = dir.join(final_name);
-    let result = write_private(&temp, bytes).and_then(|()| fs::rename(&temp, &final_path));
+    // Anything before the temp file exists belongs to someone else: only the
+    // failure paths below remove the file, and only after we created it.
+    let mut file = create_private(&temp)?;
+    let result = file
+        .write_all(bytes)
+        .and_then(|()| file.sync_all())
+        .and_then(|()| {
+            drop(file);
+            fs::rename(&temp, &final_path)
+        })
+        .and_then(|()| {
+            // Rename carries the temp file's mode, but a filesystem that drops
+            // it could leave the target at the old file's mode; set it again.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&final_path, fs::Permissions::from_mode(0o600))?;
+            }
+            io::Result::Ok(())
+        });
     if result.is_err() {
         let _ = fs::remove_file(&temp);
     }
@@ -1233,13 +1275,125 @@ mod tests_extra {
         add(&store, "alice", "1");
         let target = dir.join(ACCOUNTS_FILE);
         let before = fs::read_to_string(&target).unwrap();
-        // A directory where the temp file must go makes the write fail.
-        fs::create_dir(dir.join(".accounts.json.tmp")).unwrap();
+        // A read-only directory makes the temp file creation fail.
+        #[cfg(unix)]
+        let readonly = {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).is_ok()
+                && fs::write(dir.join("probe"), b"x").is_err()
+        };
+        #[cfg(not(unix))]
+        let readonly = false;
+        if !readonly {
+            // root or a filesystem that ignores directory modes.
+            eprintln!("skipping: directory permissions are not enforced");
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
         assert!(store
             .add_account("bob", "2", serde_json::json!({}))
             .is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), before);
-        fs::remove_dir(dir.join(".accounts.json.tmp")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A stale 0644 temp file with the old fixed name must not be reused: the
+    /// new write creates a fresh unique temp file and the result is 0600
+    /// (review #3).
+    #[cfg(unix)]
+    #[test]
+    fn stale_world_readable_temp_file_is_never_reused() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_dir("stale-temp");
+        let stale = dir.join(".accounts.json.tmp");
+        fs::write(&stale, b"stale").unwrap();
+        fs::set_permissions(&stale, fs::Permissions::from_mode(0o644)).unwrap();
+        let store = AccountStore::load(&dir, 0);
+        add(&store, "alice", "1");
+        let mode = fs::metadata(dir.join(ACCOUNTS_FILE))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        if mode != 0o600 {
+            eprintln!("skipping: filesystem does not retain mode bits");
+            let _ = fs::remove_dir_all(&dir);
+            return;
+        }
+        assert_eq!(mode, 0o600);
+        assert_eq!(fs::read(&stale).unwrap(), b"stale", "stale file untouched");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A symlink pre-planted where a temp file could land must be refused, not
+    /// followed (review #3). The unique temp name makes the old collision
+    /// impossible; the guard is exercised directly.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_temp_file_is_refused() {
+        use std::os::unix::fs::symlink;
+
+        let dir = temp_dir("symlink-temp");
+        let victim = dir.join("victim");
+        fs::write(&victim, b"do not touch").unwrap();
+        symlink(&victim, dir.join(".accounts.json.tmp")).unwrap();
+        assert!(create_private(&dir.join(".accounts.json.tmp")).is_err());
+        assert_eq!(fs::read(&victim).unwrap(), b"do not touch");
+
+        // A normal write ignores the planted link and still succeeds.
+        let store = AccountStore::load(&dir, 0);
+        add(&store, "alice", "1");
+        assert_eq!(fs::read(&victim).unwrap(), b"do not touch");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Two writers adding different accounts must not lose either account
+    /// (the write lock spans read-modify-rename, spec 50 §3.3).
+    #[test]
+    fn concurrent_writes_do_not_lose_accounts() {
+        use std::sync::Arc;
+
+        let dir = temp_dir("concurrent-add");
+        let store = Arc::new(AccountStore::load(&dir, 0));
+        let mut handles = Vec::new();
+        for worker in 0..8u32 {
+            let store = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                for round in 0..10u32 {
+                    let name = format!("w{worker}-{round}");
+                    store
+                        .add_account(
+                            &name,
+                            &format!("{worker}{round}"),
+                            serde_json::json!({"token": "x"}),
+                        )
+                        .unwrap();
+                }
+            }));
+        }
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let reloaded = AccountStore::load(&dir, 0);
+        assert_eq!(reloaded.len(), 80);
+        let leftovers: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
         let _ = fs::remove_dir_all(&dir);
     }
 

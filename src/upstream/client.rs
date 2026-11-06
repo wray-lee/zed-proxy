@@ -215,7 +215,12 @@ impl HttpUpstreamClient {
             // Idle-read cap so a stalled upstream cannot hang a stream forever
             // (spec 10 §6); the per-request timeout still bounds the total.
             .read_timeout(COMPLETIONS_STREAM_TIMEOUT)
-            .pool_idle_timeout(Duration::from_secs(30));
+            .pool_idle_timeout(Duration::from_secs(30))
+            // Never follow a redirect: the cross-host hop would carry the
+            // Authorization header, and a 3xx is a failover signal instead
+            // (spec 30 §3.1). No automatic Referer either.
+            .redirect(reqwest::redirect::Policy::none())
+            .referer(false);
         if let Some(proxy) = proxy {
             let url = format!("{}://{}:{}", proxy.scheme, proxy.host, proxy.port);
             let proxy = reqwest::Proxy::all(&url)
@@ -809,6 +814,58 @@ mod tests {
         let failure = classify_attempt(response.status, &response.body, false).unwrap();
         assert_eq!(failure.error.kind, ErrorKind::Request);
         assert_eq!(failure.error.message, "nope");
+    }
+
+    /// An upstream 302 must not be followed: the cross-host hop would carry
+    /// `Authorization` (spec 30 §3.1, review #1).
+    #[tokio::test]
+    async fn upstream_redirect_is_not_followed_and_keeps_the_token() {
+        use std::io::{Read, Write};
+
+        let second = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        second.set_nonblocking(true).unwrap();
+        let second_port = second.local_addr().unwrap().port();
+
+        let first = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", first.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut socket, _) = first.accept().unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let read = socket.read(&mut chunk).unwrap();
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&chunk[..read]);
+            }
+            let reply = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{second_port}/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(reply.as_bytes()).unwrap();
+            socket.flush().unwrap();
+            String::from_utf8_lossy(&request).into_owned()
+        });
+
+        let client = HttpUpstreamClient::new(UpstreamBase::parse(&base).unwrap(), None).unwrap();
+        let request = UpstreamRequest::new(Endpoint::Models)
+            .bearer("FAKE-TOKEN-NOT-REAL")
+            .zed_version();
+        let response = client.execute(request).await.unwrap();
+        let recorded = handle.join().unwrap().to_ascii_lowercase();
+        assert!(recorded.starts_with("get /models http/1.1"));
+        assert!(recorded.contains("authorization: bearer fake-token-not-real"));
+        // A 3xx is a transport-level failure, never a followed hop.
+        assert_eq!(response.status, 302);
+        let failure = classify_attempt(response.status, &response.body, false).unwrap();
+        assert_eq!(failure.error.kind, ErrorKind::Transient);
+        assert!(!failure.error.message.to_ascii_lowercase().contains("token"));
+        // The second listener never got a connection, so no token leaked.
+        assert!(
+            second.accept().is_err(),
+            "the redirect target must not be contacted"
+        );
+        assert!(!recorded.contains("referer:"));
     }
 
     #[tokio::test]
