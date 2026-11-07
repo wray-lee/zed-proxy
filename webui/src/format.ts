@@ -140,6 +140,11 @@ export function probeView(modelState: string | null, lang: Lang): ProbeView {
   }
 }
 
+/** Accessible name: the visible text first, then the account it acts on. */
+export function withAccountName(visible: string, account: string): string {
+  return visible.includes(account) ? visible : `${visible} · ${account}`
+}
+
 /** Only a true flag is announced; an absent or false flag stays silent. */
 export function billingNoteCopy(overdue: boolean | null, accountTooYoung: boolean | null, lang: Lang): string | null {
   const parts: string[] = []

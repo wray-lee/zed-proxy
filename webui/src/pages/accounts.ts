@@ -5,7 +5,7 @@ import { h, clear, pageRoot } from '../dom.ts'
 import { describe, failureFrom } from '../api.ts'
 import { completeLogin } from '../data.ts'
 import type { AccountRow, StatusRow } from '../data.ts'
-import { billingNoteCopy, dateOnly, dateTime, fraction, money, planName, probeView, quotaView, orbErrorCopy } from '../format.ts'
+import { billingNoteCopy, dateOnly, dateTime, fraction, money, planName, probeView, quotaView, orbErrorCopy, withAccountName } from '../format.ts'
 import { confirmDialog } from '../dialog.ts'
 import { state } from '../state.ts'
 import { tf, tr } from '../text.ts'
@@ -291,7 +291,7 @@ function orbBlock(row: AccountRow, status: StatusRow | null): HTMLElement {
               class: 'btn btn-primary',
               'aria-busy': String(busy),
               disabled: busy,
-              'aria-label': tf('orbSaveFor', lang, name),
+              'aria-label': withAccountName(busy ? tr('orbSaving', lang) : tr('orbSave', lang), name),
               onclick: () => {
                 void submitOrbLink(row.name)
               },
@@ -357,7 +357,7 @@ function unlinkButton(row: AccountRow, busy: boolean): HTMLElement {
         type: 'button',
         class: 'btn btn-quiet',
         disabled: busy,
-        'aria-label': tf('orbUnlinkFor', lang, row.name),
+        'aria-label': withAccountName(tr('orbUnlink', lang), row.name),
         onclick: () => {
           confirmDialog(
             tr('orbUnlinkTitle', lang),
@@ -381,6 +381,8 @@ function cardActions(row: AccountRow): HTMLElement {
   const current = activeName() === row.name
   const busyProbe = view.busy.probe[row.name] === true || view.busy.probeAll
   const busySwitch = view.busy.switch[row.name] === true
+  const probeLabel = busyProbe ? tf('probeOneBusy', lang, row.name) : tr('probeOne', lang)
+  const switchLabel = busySwitch ? tf('switching', lang, row.name) : tr('switchTo', lang)
   return h(
     'div',
     { class: 'card-actions' },
@@ -391,7 +393,7 @@ function cardActions(row: AccountRow): HTMLElement {
         href: 'https://zed.dev/account',
         target: '_blank',
         rel: 'noopener noreferrer',
-        'aria-label': tf('billingFor', lang, row.name),
+        'aria-label': withAccountName(tr('billingLink', lang), row.name),
       },
       tr('billingLink', lang),
     ),
@@ -402,12 +404,12 @@ function cardActions(row: AccountRow): HTMLElement {
         class: 'btn',
         disabled: busyProbe,
         'aria-busy': String(busyProbe),
-        'aria-label': tf('probeOneFor', lang, row.name),
+        'aria-label': withAccountName(probeLabel, row.name),
         onclick: () => {
           void runSingleProbe(row.name)
         },
       },
-      busyProbe ? tf('probeOneBusy', lang, row.name) : tr('probeOne', lang),
+      probeLabel,
     ),
     h('span', { class: 'spacer' }),
     current
@@ -419,12 +421,12 @@ function cardActions(row: AccountRow): HTMLElement {
             class: 'btn',
             disabled: busySwitch,
             'aria-busy': String(busySwitch),
-            'aria-label': tf('switchToFor', lang, row.name),
+            'aria-label': withAccountName(switchLabel, row.name),
             onclick: () => {
               void doSwitch(row.name)
             },
           },
-          busySwitch ? tf('switching', lang, row.name) : tr('switchTo', lang),
+          switchLabel,
 
         ),
   )

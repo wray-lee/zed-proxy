@@ -226,13 +226,25 @@ function renderLanguage(): void {
           onclick: () => {
             if (lang === code) return
             saveLanguage(code)
-            window.location.reload()
+            // Storage may be blocked, so a reload could read the old language
+            // back. Redraw in place: the page stays, the hash stays, and the
+            // in-memory language wins for this session.
+            rerenderAll()
+            document.querySelector<HTMLElement>(`.lang-btn[lang="${code === 'zh' ? 'zh-CN' : 'en-US'}"]`)?.focus()
           },
         },
         tr(code === 'zh' ? 'langZh' : 'langEn', code),
       ),
     )
   }
+}
+
+/** Redraw everything in place after a language change, without touching the hash. */
+function rerenderAll(): void {
+  renderChrome()
+  renderNavBadge()
+  tickClock()
+  for (const page of PAGES) renderPage(page)
 }
 
 function renderChrome(): void {
