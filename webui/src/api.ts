@@ -91,8 +91,11 @@ export function failureFrom(err: unknown): Failure {
 // ---- Gateway key prompt -----------------------------------------------------
 
 let pendingPrompt: Promise<boolean> | null = null
+/** Last key the server rejected; do not ask for it again in this session. */
+let rejectedKey: string | null = null
 
 function askForKey(): Promise<boolean> {
+  if (state.apiKey !== '' && state.apiKey === rejectedKey) return Promise.resolve(false)
   if (pendingPrompt) return pendingPrompt
   pendingPrompt = new Promise<boolean>((resolve) => {
     let settled = false
@@ -216,7 +219,11 @@ export async function request<T>(path: string, options: RequestOptions = {}): Pr
     const accepted = await askForKey()
     if (!accepted) throw new ApiError(401, null)
     response = await send(path, options, authorized)
-    if (response.status === 401) throw new ApiError(401, null)
+    if (response.status === 401) {
+      rejectedKey = state.apiKey
+      throw new ApiError(401, null)
+    }
+    rejectedKey = null
   }
   if (!response.ok) {
     throw new ApiError(response.status, humanDetail(await readErrorBody(response)))

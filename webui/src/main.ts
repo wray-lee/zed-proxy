@@ -3,8 +3,19 @@
 
 import './theme.css'
 import { clear, h, pageRoot } from './dom.ts'
-import { detectLanguage, currentPort, loadStoredPreferences, pageFromHash, PAGES, state, subscribe, announce, saveLanguage } from './state.ts'
+import {
+  announce,
+  currentPort,
+  detectLanguage,
+  loadStoredPreferences,
+  pageFromHash,
+  PAGES,
+  saveLanguage,
+  state,
+  subscribe,
+} from './state.ts'
 import type { PageId } from './state.ts'
+import type { TextKey } from './text.ts'
 import { tr } from './text.ts'
 import { checkLiveness, loadCatalogue } from './data.ts'
 import { toast } from './ui.ts'
@@ -13,23 +24,22 @@ import { attachModelsPage } from './pages/models.ts'
 import { attachHealthPage } from './pages/health.ts'
 import { attachRoutesPage } from './pages/routes.ts'
 import { attachClientsPage } from './pages/clients.ts'
-import { onChange, reloadAccounts } from './store.ts'
+import { onChange, reloadAccounts, view } from './store.ts'
 
 interface PageModule {
   render(): void
-  /** Runs once after mount to load first-screen data. */
   attach(): void
 }
 
 const modules: Record<PageId, PageModule> = {
-  accounts: { render: attachAccountsPage.render, attach: attachAccountsPage.attach },
-  models: { render: attachModelsPage.render, attach: attachModelsPage.attach },
-  health: { render: attachHealthPage.render, attach: attachHealthPage.attach },
-  endpoints: { render: attachRoutesPage.render, attach: attachRoutesPage.attach },
-  integration: { render: attachClientsPage.render, attach: attachClientsPage.attach },
+  accounts: attachAccountsPage,
+  models: attachModelsPage,
+  health: attachHealthPage,
+  endpoints: attachRoutesPage,
+  integration: attachClientsPage,
 }
 
-const PAGE_LABELS: Record<PageId, 'navAccounts' | 'navModels' | 'navDiagnostics' | 'navRoutes' | 'navConnect'> = {
+const PAGE_LABELS: Record<PageId, TextKey> = {
   accounts: 'navAccounts',
   models: 'navModels',
   health: 'navDiagnostics',
@@ -37,53 +47,87 @@ const PAGE_LABELS: Record<PageId, 'navAccounts' | 'navModels' | 'navDiagnostics'
   integration: 'navConnect',
 }
 
-const renderFaults = new Set<PageId>()
-
 function sectionFor(page: PageId): HTMLElement | null {
   return pageRoot(page)
 }
 
+function focusKey(node: Element | null): string | null {
+  if (!(node instanceof HTMLElement)) return null
+  if (node.id) return `#${CSS.escape(node.id)}`
+  const label = node.getAttribute('aria-label')
+  if (label) return `[aria-label="${CSS.escape(label)}"]`
+  return null
+}
+
+/** Pages whose last render threw stay on the error surface until retried. */
+const faultedPages = new Set<PageId>()
+
 function renderPage(page: PageId): void {
   const host = sectionFor(page)
   if (!host) return
+  if (faultedPages.has(page)) {
+    renderPageFault(host, page)
+    return
+  }
+  const active = document.activeElement
+  const restore = host.contains(active) ? focusKey(active) : null
   try {
     modules[page].render()
-    renderFaults.delete(page)
   } catch (err) {
     console.error('[console] page render failed', page, err)
-    renderFaults.add(page)
-    const lang = state.lang
-    clear(host)
-    host.append(
+    faultedPages.add(page)
+    renderPageFault(host, page)
+    return
+  }
+  if (restore) {
+    const target = host.querySelector(restore)
+    if (target instanceof HTMLElement) target.focus()
+  }
+}
+
+function renderPageFault(host: HTMLElement, page: PageId): void {
+  const lang = state.lang
+  try {
+    drawPageFault(host, page, lang)
+  } catch (err) {
+    // The error surface must not depend on the DOM helpers that just failed.
+    console.error('[console] error surface failed', err)
+    host.textContent = tr('pageBrokenTitle', lang)
+  }
+}
+
+function drawPageFault(host: HTMLElement, page: PageId, lang: 'zh' | 'en'): void {
+  clear(host)
+  host.append(
+    h(
+      'div',
+      { class: 'errorbox', role: 'alert' },
+      h('h1', { class: 'error-title' }, tr('pageBrokenTitle', lang)),
+      h('p', {}, tr('pageBrokenBody', lang)),
+      h('p', { class: 'detail-note' }, tr('pageBrokenDetail', lang)),
       h(
         'div',
-        { class: 'errorbox', role: 'alert' },
-        h('p', { class: 'error-title' }, tr('pageBrokenTitle', lang)),
-        h('p', {}, tr('pageBrokenBody', lang)),
-        h('p', { class: 'detail-note' }, tr('pageBrokenDetail', lang)),
+        { class: 'chip-row' },
         h(
-          'div',
-          { class: 'chip-row' },
-          h(
-            'button',
-            {
-              type: 'button',
-              class: 'btn',
-              onclick: () => {
-                renderPage(page)
-              },
+          'button',
+          {
+            type: 'button',
+            class: 'btn',
+            onclick: () => {
+              faultedPages.delete(page)
+              renderPage(page)
             },
-            tr('retry', lang),
-          ),
-          h(
-            'button',
-            { type: 'button', class: 'btn btn-quiet', onclick: () => window.location.reload() },
-            tr('reload', lang),
-          ),
+          },
+          tr('retry', lang),
+        ),
+        h(
+          'button',
+          { type: 'button', class: 'btn btn-quiet', onclick: () => window.location.reload() },
+          tr('reload', lang),
         ),
       ),
-    )
-  }
+    ),
+  )
 }
 
 // ---- Frame ------------------------------------------------------------------
@@ -93,15 +137,14 @@ function renderNav(): void {
   if (!nav) return
   const lang = state.lang
   nav.setAttribute('aria-label', tr('navLabel', lang))
-  const groups: { label: string; pages: PageId[] }[] = [
-    { label: tr('navRunGroup', lang), pages: ['accounts', 'models', 'health'] },
-    { label: tr('navDevGroup', lang), pages: ['endpoints', 'integration'] },
+  const groups: { label: TextKey; pages: PageId[] }[] = [
+    { label: 'navRunGroup', pages: ['accounts', 'models', 'health'] },
+    { label: 'navDevGroup', pages: ['endpoints', 'integration'] },
   ]
   clear(nav)
   for (const group of groups) {
     const list = h('ul', { class: 'nav-list' })
     for (const page of group.pages) {
-      const label = tr(PAGE_LABELS[page], lang)
       const item = h(
         'button',
         {
@@ -113,32 +156,40 @@ function renderNav(): void {
           },
         },
         h('span', { class: 'nav-index', 'aria-hidden': 'true' }, String(PAGES.indexOf(page) + 1).padStart(2, '0')),
-        h('span', { class: 'nav-name' }, label),
+        h('span', { class: 'nav-name' }, tr(PAGE_LABELS[page], lang)),
       )
-      if (page === 'accounts') {
-        const summary = accountsSummary()
-        item.append(
-          h(
-            'span',
-            { class: 'nav-badge', 'aria-hidden': 'true' },
-            summary.count === null ? '·' : String(summary.count),
-          ),
-        )
-      }
-      const li = h('li', {}, item)
-      list.append(li)
+      list.append(h('li', {}, item))
     }
-    nav.append(h('div', {}, h('p', { class: 'rail-nav-group' }, group.label), list))
+    nav.append(h('div', {}, h('p', { class: 'rail-nav-group' }, tr(group.label, lang)), list))
   }
   markCurrent()
+}
+
+/** Updates only the account-count badge so a nav button keeps keyboard focus. */
+function renderNavBadge(): void {
+  const nav = document.getElementById('nav')
+  if (!nav) return
+  const item = nav.querySelector<HTMLButtonElement>('.nav-item[data-page="accounts"]')
+  if (!item) return
+  const { count } = accountsSummary()
+  const existing = item.querySelector('.nav-badge')
+  if (count === null) {
+    existing?.remove()
+    return
+  }
+  const label = String(count)
+  if (existing) {
+    if (existing.textContent !== label) existing.textContent = label
+    return
+  }
+  item.append(h('span', { class: 'nav-badge', 'aria-hidden': 'true' }, label))
 }
 
 function markCurrent(): void {
   const nav = document.getElementById('nav')
   if (!nav) return
   for (const button of nav.querySelectorAll<HTMLButtonElement>('.nav-item')) {
-    const page = button.dataset.page
-    if (page === state.page) button.setAttribute('aria-current', 'page')
+    if (button.dataset.page === state.page) button.setAttribute('aria-current', 'page')
     else button.removeAttribute('aria-current')
   }
 }
@@ -149,15 +200,14 @@ function renderTrail(): void {
   const lang = state.lang
   clear(trail)
   trail.append(
-    h('span', { class: 'crumb' }, tr('crumb', lang)),
+    h('span', {}, tr('crumb', lang)),
     h('span', { 'aria-hidden': 'true' }, '/'),
     h('strong', {}, tr(PAGE_LABELS[state.page], lang)),
   )
   document.title = `${tr(PAGE_LABELS[state.page], lang)} · ${tr('appName', lang)}`
-  document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en-US'
 }
 
-function renderLang(): void {
+function renderLanguage(): void {
   const host = document.getElementById('lang')
   if (!host) return
   const lang = state.lang
@@ -185,59 +235,21 @@ function renderLang(): void {
   }
 }
 
-function renderPort(): void {
-  const port = document.getElementById('port')
-  if (!port) return
+function renderChrome(): void {
   const lang = state.lang
-  port.textContent = `${tr('portLabel', lang)} ${currentPort()}`
-}
-
-function tickClock(): void {
-  const host = document.getElementById('clock')
-  if (!host) return
-  const now = new Date()
-  const time = new Intl.DateTimeFormat(state.lang === 'zh' ? 'zh-CN' : 'en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).format(now)
-  host.textContent = time
-  host.setAttribute('title', tr('clockLabel', state.lang))
-}
-
-interface OverviewState {
-  alive: boolean | null
-  modelCount: number | null
-}
-
-const overview: OverviewState = { alive: null, modelCount: null }
-
-function renderOverview(): void {
-  const host = document.getElementById('overview')
-  if (!host) return
-  const lang = state.lang
-  const alive = overview.alive
-  const tone = alive === null ? 'idle' : alive ? 'ok' : 'bad'
-  const label = alive === null ? tr('serviceUnknown', lang) : alive ? tr('serviceRunning', lang) : tr('serviceDown', lang)
-  clear(host)
-  host.append(
-    h('p', { class: 'status-line', 'data-tone': tone }, h('span', { class: 'status-dot', 'aria-hidden': 'true' }), label),
-    h(
-      'p',
-      { class: 'overview-note' },
-      alive === true
-        ? overview.modelCount === null
-          ? tr('modelsCountUnavailable', lang)
-          : `${overview.modelCount} ${tr('modelsCount', lang)}`
-        : alive === false
-          ? tr('serviceDown', lang)
-          : tr('serviceUnknown', lang),
-    ),
-    h('p', { class: 'overview-note' }, `${tr('localAddress', lang)} ${window.location.host || `127.0.0.1:${currentPort()}`}`),
-  )
+  document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en-US'
+  const skip = document.getElementById('skip-link')
+  if (skip) skip.textContent = tr('skipLink', lang)
+  const rail = document.getElementById('rail')
+  if (rail) rail.setAttribute('aria-label', tr('overview', lang))
   const sub = document.getElementById('brand-sub')
   if (sub) sub.textContent = tr('overview', lang)
+  renderNav()
+  renderLanguage()
+  renderTrail()
+  const port = document.getElementById('port')
+  if (port) port.textContent = `${tr('portLabel', lang)} ${currentPort()}`
+  renderOverview()
   const foot = document.getElementById('rail-foot')
   if (foot) {
     clear(foot)
@@ -245,20 +257,61 @@ function renderOverview(): void {
   }
 }
 
-async function refreshOverview(): Promise<void> {
-  overview.alive = await checkLiveness()
-  renderOverview()
-  try {
-    const catalogue = await loadCatalogue()
-    overview.modelCount = catalogue.models.length
-  } catch {
-    overview.modelCount = null
-  }
-  renderOverview()
+function renderOverview(): void {
+  const host = document.getElementById('overview')
+  if (!host) return
+  const lang = state.lang
+  const { alive, modelCount } = view.overview
+  const tone = alive === null ? 'idle' : alive ? 'ok' : 'bad'
+  const label = alive === null ? tr('serviceUnknown', lang) : alive ? tr('serviceRunning', lang) : tr('serviceDown', lang)
+  const modelLine =
+    alive === true
+      ? modelCount === null
+        ? tr('modelsCountUnavailable', lang)
+        : `${modelCount} ${tr('modelsCount', lang)}`
+      : alive === false
+        ? tr('serviceDown', lang)
+        : tr('serviceUnknown', lang)
+  clear(host)
+  host.append(
+    h(
+      'p',
+      { class: 'status-line', 'data-tone': tone },
+      h('span', { class: 'status-dot', 'aria-hidden': 'true' }),
+      label,
+    ),
+    h('p', { class: 'overview-note' }, modelLine),
+    h(
+      'p',
+      { class: 'overview-note' },
+      `${tr('localAddress', lang)} ${window.location.host || `127.0.0.1:${currentPort()}`}`,
+    ),
+  )
 }
 
-export function reportCatalogueCount(count: number): void {
-  overview.modelCount = count
+function tickClock(): void {
+  const host = document.getElementById('clock')
+  if (!host) return
+  host.textContent = new Intl.DateTimeFormat(state.lang === 'zh' ? 'zh-CN' : 'en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date())
+  host.setAttribute('title', tr('clockLabel', state.lang))
+}
+
+async function refreshOverview(): Promise<void> {
+  const alive = await checkLiveness()
+  view.overview.alive = alive
+  renderOverview()
+  if (!alive) return
+  try {
+    const catalogue = await loadCatalogue()
+    view.overview.modelCount = catalogue.models.length
+  } catch {
+    view.overview.modelCount = null
+  }
   renderOverview()
 }
 
@@ -274,22 +327,19 @@ function showPage(page: PageId): void {
   renderTrail()
 }
 
-function goTo(page: PageId, pushHash = true): void {
+function goTo(page: PageId): void {
   if (state.page === page) return
   showPage(page)
-  if (pushHash && window.location.hash !== `#${page}`) {
-    window.location.hash = page
-  }
+  renderPage(page)
+  if (window.location.hash !== `#${page}`) window.location.hash = page
 }
 
 function syncFromHash(): void {
   const page = pageFromHash()
   if (page === state.page) return
-  if (!(page in modules)) {
-    showPage('accounts')
-    return
-  }
   showPage(page)
+  renderPage(page)
+  announce()
 }
 
 // ---- Startup ----------------------------------------------------------------
@@ -307,15 +357,11 @@ function start(): void {
   if (boot) boot.remove()
 
   showPage(pageFromHash())
-  renderNav()
-  renderLang()
-  renderPort()
-  renderOverview()
-  renderTrail()
-  for (const candidate of PAGES) {
-    const section = sectionFor(candidate)
-    if (section) section.hidden = candidate !== state.page
-  }
+  renderChrome()
+  tickClock()
+
+  // Store changes only redraw the visible page; the others redraw when shown.
+  const renderCurrentPage = (): void => renderPage(state.page)
 
   for (const page of PAGES) {
     renderPage(page)
@@ -326,13 +372,7 @@ function start(): void {
     }
   }
 
-  try {
-    tickClock()
-    window.setInterval(tickClock, 1000)
-  } catch (err) {
-    console.error('[console] clock failed', err)
-  }
-
+  window.setInterval(tickClock, 1000)
   window.addEventListener('hashchange', syncFromHash)
   window.addEventListener('error', (event) => {
     console.error('[console] uncaught error', event.error ?? event.message)
@@ -348,22 +388,14 @@ function start(): void {
       void reloadAccounts()
     }
   })
-  subscribe(() => {
-    renderNav()
-  })
+  renderNavBadge()
+  subscribe(renderChrome)
   onChange(() => {
-    for (const page of PAGES) renderPage(page)
+    renderNavBadge()
+    renderCurrentPage()
   })
 
   void refreshOverview()
-  void loadCatalogue()
-    .then((catalogue) => {
-      if (overview.alive !== false) reportCatalogueCount(catalogue.models.length)
-    })
-    .catch(() => {
-      // The catalogue view shows its own error; the rail keeps its placeholder.
-    })
-  void announce
 }
 
 start()

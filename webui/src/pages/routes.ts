@@ -40,7 +40,7 @@ const GROUPS: RouteGroup[] = [
     title: 'routesGroupCompat',
     rows: [
       { method: 'POST', path: '/v1/messages/count_tokens…', purpose: 'routesPurposeCount', key: true },
-      { method: 'OPTIONS', path: 'any path', purpose: 'routesPurposeOptions', key: false },
+      { method: 'OPTIONS', path: '*', purpose: 'routesPurposeOptions', key: false },
     ],
   },
   {

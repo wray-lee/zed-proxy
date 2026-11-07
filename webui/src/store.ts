@@ -60,22 +60,33 @@ export interface ProbeInfo {
   model: string
 }
 
+export interface OverviewSlice {
+  alive: boolean | null
+  modelCount: number | null
+}
+
 export interface View {
   catalogue: CatalogueSlice
   accounts: AccountsSlice
   status: StatusSlice
+  overview: OverviewSlice
   busy: BusyState
   probe: ProbeInfo | null
-  loginOpen: boolean
 }
 
 export const view: View = {
   catalogue: { phase: 'idle', models: [], error: null },
   accounts: { phase: 'idle', rows: [], current: null, error: null, loadedAt: null },
   status: { phase: 'idle', checkedAt: null, rows: {}, error: null, stale: false },
+  overview: { alive: null, modelCount: null },
   busy: { status: false, balance: false, probeAll: false, catalogue: false, probe: {}, switch: {}, orb: {} },
   probe: null,
-  loginOpen: false,
+}
+
+export function setModelCount(count: number): void {
+  update(() => {
+    view.overview.modelCount = count
+  })
 }
 
 const listeners = new Set<() => void>()
@@ -115,6 +126,7 @@ export async function reloadCatalogue(): Promise<void> {
     update(() => {
       view.catalogue.phase = 'ready'
       view.catalogue.models = catalogue.models
+      view.overview.modelCount = catalogue.models.length
     })
     reconcileProbeModel()
   } catch (err) {

@@ -153,6 +153,9 @@ a:hover {
   left: -9999px;
   top: var(--space-2);
   z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
   padding: var(--space-2) var(--space-4);
   background: var(--ink);
   color: var(--rail-text);
@@ -522,6 +525,7 @@ main:focus {
   font-size: 0.92rem;
   text-decoration: none;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .btn:hover:not(:disabled) {

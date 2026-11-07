@@ -47,9 +47,7 @@ function modelRow(row: ModelRow): HTMLElement {
       h('p', { class: 'model-slug' }, row.slug),
       row.description ? h('p', { class: 'model-desc' }, row.description) : null,
       levelChips(row),
-      row.contextLength !== null
-        ? h('p', { class: 'model-desc' }, `${row.contextLength} context tokens`)
-        : null,
+      row.contextLength !== null ? h('p', { class: 'model-desc' }, tf('contextTokens', lang, row.contextLength)) : null,
     ),
     selected
       ? h('span', { class: 'badge', 'data-tone': 'ok' }, tr('inUse', lang))

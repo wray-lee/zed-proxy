@@ -70,7 +70,6 @@ function activeName(): string | null {
 }
 
 function tokenCounts(): { valid: number; total: number } | null {
-  if (view.status.phase !== 'ready' || view.status.stale) return null
   const rows = Object.values(view.status.rows)
   if (rows.length === 0) return null
   let valid = 0
@@ -129,7 +128,9 @@ function metricsBlock(): HTMLElement {
     metric(
       tr('metricProbes', lang),
       probes === null ? '—' : `${probes.healthy} / ${probes.total}`,
-      view.probe ? tf('costProbeUnknown', lang, effortLabel(view.probe.report.effort)) : tr('metricNoProbe', lang),
+      view.probe
+        ? `${view.probe.report.model ?? view.probe.model} · ${effortLabel(view.probe.report.effort)}`
+        : tr('metricNoProbe', lang),
     ),
     metric(tr('metricCooldowns', lang), String(cooldownCount()), checked ? tf('metricCheckedAt', lang, checked) : tr('metricNeverChecked', lang)),
   )
@@ -790,7 +791,7 @@ function probeModelControl(): HTMLElement {
       {
         class: 'select',
         id: 'probe-model',
-        disabled: view.busy.probeAll || view.busy.status,
+        disabled: view.busy.probeAll,
         onchange: (event: Event) => {
           const target = event.target
           if (!(target instanceof HTMLSelectElement)) return

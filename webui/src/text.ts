@@ -213,6 +213,8 @@ export const dict = {
   defaultEffort: ['默认档位', 'Default level'],
   levels: ['支持的档位', 'Levels'],
   provider: ['供应商', 'Provider'],
+  contextTokens: ['上下文 {0} 个令牌', '{0} context tokens'],
+  routesAnyPath: ['任意路径', 'any path'],
   useForProbe: ['选用为探测模型', 'Use for probes'],
   inUse: ['已选用', 'In use'],
   refreshOk: ['目录已刷新，共 {0} 个模型。', 'Catalogue refreshed: {0} models.'],
