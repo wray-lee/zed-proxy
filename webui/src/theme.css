@@ -1452,6 +1452,14 @@ main:focus {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .field-row {
+    flex-wrap: wrap;
+  }
+
+  .field-row .btn {
+    flex: 1 1 100%;
+  }
+
   .card-head {
     align-items: flex-start;
   }
