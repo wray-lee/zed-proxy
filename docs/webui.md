@@ -24,21 +24,25 @@ The console is the gateway's own management page: the TypeScript sources in `web
 
 The order is fixed: the frame renders first (rail, top bar, navigation, language switch, toast layer, five page containers), then language detection and storage reads, then each page renders and loads its own data, and only then the clock, visibility and hash listeners attach.
 
+The navigation is plain buttons, not a router library: a valid hash shows its page at load, `hashchange` follows the back and forward buttons without reloading, and each entry is marked with `aria-current="page"`. The account entry carries a count badge that stays absent until the account list has loaded, so a failed load never reads as "0 accounts". At 780 px wide and below the rail turns into a header above the content and the navigation wraps; every entry keeps a 44 px target. The metrics grid drops to two columns at 960 px and the route table stacks its columns there too. Diagnostics runs its six checks when the page first opens, not on every visit.
+
 Each page render is wrapped in its own guard. When one page throws, that page shows an error surface (what happened, a plain-language reason, retry, reload) while the other pages, the navigation and the language switch stay usable. The error surface has its own fallback: if the DOM helpers used to build it also fail, the container still gets a single line of text. Exceptions inside async updates put only that view into its error state. No module-level code reads local storage, so a browser that blocks site data still renders the whole console.
 
 ## Design direction
 
 **Reader and setting.** The reader runs this gateway. They open a one-off management page on localhost or a LAN address to check whether accounts still work, whether tokens expired, how much quota is left, and whether the model catalogue moved. The task is verification, not operations, so the layout is organised around density and scan speed rather than dashboard-style metrics.
 
-**Colour (two core colours plus one accent).** Paper `#f7f4ec` and ink `#1d1c19` carry every background and text level. The accent is terracotta `#9c3a1a`, used in exactly three places: the current-page marker in the rail, the single primary button on a page, and the left edge of a banner that needs attention. The page is almost entirely text and hairlines, so an accent spread further would stop marking a primary action. Green, amber and red exist only as functional status colours on tags and notices; they are never decoration.
+**Colour (two core colours plus one accent).** Paper `#f7f4ec` and ink `#1d1c19` carry every background and text level. The accent is terracotta `#9c3a1a`, and it is the only colour that marks attention: a primary action (probe all, add account, save an Orb link, finish a login, refresh the catalogue, run the checks), the left edge of banners and of the active account, the selected model row, the login panel edge, the top rule of each protocol strip, the balance fill, the avatar wash, the diamond in front of a key-required route, the focus ring and the spinner arc. Links use the darker variant `#7f2d12` so body-sized link text clears 4.5:1 on paper. The page is almost entirely text and hairlines, so one signal colour is enough; spreading it further would stop marking a primary action. Green, amber and red exist only as functional status colours on tags and notices; they are never decoration.
 
 **Contrast.** Body ink on paper is about 15.5:1; secondary text `#59554c` about 6.7:1; the accent as text about 6.3:1; light text on the dark rail about 15:1 and secondary rail text about 9.7:1. All clear WCAG AA 4.5:1, with room above the 3:1 floor for large text and focus rings. Disabled text is lighter but still legible.
 
-**Type and hierarchy.** Headings use a serif stack (Iowan Old Style / Palatino / Georgia / Noto Serif), body text the system sans stack, and machine values (model ids, paths, amounts, times, storage keys) a monospace stack. Each stack has one job. Hierarchy comes from size, weight and space, not shadow. Serif appears only at page and section level; card titles return to sans so the whole page does not read as a masthead.
+**Type and hierarchy.** Headings use a serif stack (Iowan Old Style / Palatino / Georgia / Noto Serif), body text the system sans stack, and machine values (model ids, paths, amounts, times, storage keys) a monospace stack. Each stack has one job. Hierarchy comes from size, weight and space, not shadow. Serif appears at page and section level, on the four metric values and on the dialog title; card titles, row labels and every control return to sans so the whole page does not read as a masthead. Small labels and column heads are uppercase and letter-spaced at 0.72 to 0.78 rem; that is the one repeated typographic device, and it is what makes a ruled list still scan as a table.
 
 **Rules instead of stacked cards.** Accounts, models, checks and routes are lists of rows separated by hairlines, not one raised card per item. Lists run to twenty or thirty entries, where repeated padding and borders inside cards slow scanning down. Accounts carry many fields, so they sit in a thin-bordered container, but the interior is still a ruled grid with no nested radii or shadow.
 
-**Radius scale.** Three values: 4 px (tags, small squares, icon boxes), 8 px (buttons, inputs, list containers, banners), 12 px (account containers and dialogs), plus a 999 px pill for status tags. No component picks a fourth value.
+**Radius scale.** Three values: 4 px (tags, small squares, icon boxes), 8 px (buttons, inputs, list containers, banners), 12 px (account containers and dialogs), plus a 999 px pill for status tags. No component picks a fourth value; the status dot, the avatar circle and the spinner stay circles as shapes, not as a radius choice.
+
+**Rail and navigation.** The rail is the one dark surface, so the five navigation entries stay visible while the page area changes. Entries are numbered `01` to `05` in a monospace column, decorative and hidden from assistive tech: the numbers give the eye a fixed anchor when the current page is marked by an underline plus background, and they cost nothing when ignored. The rail also carries the service state at the top, because "is the gateway answering at all" is the first question this page answers, and the two factual notes at the bottom.
 
 **Spacing scale.** 4 / 8 / 12 / 16 / 24 / 32 / 48. Rows use 16 px padding and separate with a hairline instead of stacking margins.
 
@@ -52,10 +56,10 @@ Each page render is wrapped in its own guard. When one page throws, that page sh
 
 | Page | Hash | Contents |
 | --- | --- | --- |
-| Accounts | `#accounts` | Four header controls (probe model, refresh account status, refresh Orb balance, probe all), a cost banner, four metrics, the account card list, add-account and the login panel |
+| Accounts | `#accounts` | Four header controls (probe model, refresh account status, refresh Orb balance, probe all), a cost banner, four metrics, the account list, add-account and the login panel |
 | Models | `#models` | Catalogue refresh, an explainer banner, model rows (display name, id, provider, description, default and supported levels, context length, use-for-probe) |
 | Diagnostics | `#health` | Six read-only checks in a fixed order, per-row state, a summary with finish time, run again |
-| Routes | `#routes` | Three protocol entries and seven static route groups, each row with method and whether a gateway key is needed; the page sends no requests |
+| Routes | `#routes` | Three protocol entries and six static route groups (page and liveness, models and protocols, compatibility, accounts and quota, catalogue and identity, login), each row with method and whether a gateway key is needed; the page sends no requests |
 | Clients | `#clients` | Base-address notes and four copy-ready snippets (Codex, Claude Code, OpenCode, a shell request) |
 
 The first three navigation entries form "Runtime", the last two "Development". The current page is marked with `aria-current="page"` and an underline, not colour alone.
@@ -88,4 +92,6 @@ Snippets are built from runtime values: the base address comes from the page's p
 
 ## Acceptance material
 
-Page acceptance runs against a fake gateway (local, fixed fixtures, no real credentials) in a headless browser: Chinese and English screenshots of all five pages at desktop and phone widths, no horizontal overflow at narrow widths, 44 px target checks, a keyboard walk, Esc closing dialogs and returning focus, static waiting under reduced motion, storage-blocked degradation, single-page render-fault isolation, and the static fallback with scripts disabled. Screenshots and logs live in `F:\Projects\tmp\.scratch\zed-proxy\webui-check\rust-0.3.0-redesign\` and are not committed.
+Page acceptance runs against a fake gateway (local, fixed fixtures, no real credentials) in a headless browser: Chinese and English screenshots of all five pages at desktop and phone widths, no horizontal overflow at narrow widths, 44 px target checks, a keyboard walk, Esc closing dialogs and returning focus, static waiting under reduced motion, storage-blocked degradation, single-page render-fault isolation, and the static fallback with scripts disabled. The run also covers state screenshots, focus rings, a 320 px page and 200 % zoom, an axe-core scan per page and a hand-checked contrast and focus-order log.
+
+The full set, including logs, lives in `F:\Projects\tmp\.scratch\zed-proxy\webui-check\rust-0.3.0-redesign\` and is not committed. Four captures from that set are committed for the README, straight copies with fake data and no real account: `docs/assets/webui-accounts.en.png`, `webui-accounts.zh.png`, `webui-health.en.png`, `webui-health.zh.png` (wide, 1440 px).

@@ -25,4 +25,4 @@ cargo build --release --locked --target aarch64-unknown-linux-musl
 
 Dockerfile 在 QEMU 下为两种架构分别原生构建（`build` 阶段是 `rust:1.99-alpine`，本身即 musl），运行镜像里既没有 `curl` 也没有 `openssl`：健康检查用 `zed-proxy healthcheck`。镜像以 uid 10001 运行，`/data` 权限为 `0700`。
 
-测试放在各模块的 `#[cfg(test)] mod tests` 中，没有 `tests/` 目录。管理页在 `webui/` 下用 `npx tsc --noEmit` 做类型检查、用 `npm run build` 构建。
+测试放在各模块的 `#[cfg(test)] mod tests` 中，没有 `tests/` 目录。`webui/` 里的控制台是纯 TypeScript、不引入 UI 框架，用 `npx tsc --noEmit` 做类型检查、`npm run build` 构建，产物是单个 `dist/index.html`（Vite 加 `vite-plugin-singlefile`）。其结构与设计规则见[控制台（WebUI）](webui.zh-CN.md)。

@@ -23,9 +23,11 @@ HTTP contract is preserved; the changes below are the ones a user can notice.
   one account or all of them, bypassing the 5-minute/60-second cache with a
   5-second per-account floor, and keeps the last good numbers when the portal
   fails. Responses use the fixed-decimal `credit` object.
-- Account center button "Refresh balance" and models page button "Refresh model
-  list", both bilingual with loading state, success/failure toasts and no
-  data loss on failure.
+- The accounts page has "Refresh account status" and "Refresh Orb balance"
+  buttons and a "Probe all accounts" button, and the models page has "Refresh
+  catalogue"; all are bilingual, show a busy state, report success or failure
+  and keep the values already on screen when a refresh fails. The probe model
+  selector above the account list chooses the model every probe uses.
 - `zed-proxy healthcheck [--url <url>]` replaces the container's `curl` health
   check.
 - `ZED_UPSTREAM_BASE` overrides the base URL of the four Zed endpoints (for
@@ -54,6 +56,24 @@ HTTP contract is preserved; the changes below are the ones a user can notice.
   the BCrypt login branch, the Winsock wrappers and the Windows link
   configuration are gone.
 - `GET /` sends `Cache-Control: no-store`.
+- The Web UI is a clean-room rewrite in TypeScript, built by Vite into one
+  self-contained `webui/dist/index.html` and embedded at compile time. The
+  layout is new: a dark side rail with the service state and a numbered
+  navigation, two core colours (paper and ink) plus one terracotta accent,
+  serif headings over sans body text, hairline-separated rows instead of a card
+  grid, and a 4/8/12 px radius scale. The five pages are Accounts, Models,
+  Diagnostics, Routes and Clients; the browser's language is used unless
+  `zed_lang` says otherwise, and the switch in the top bar stays on the current
+  page.
+- Every page renders in its own guard with an error surface and a retry: one
+  failing page no longer stops the others, and the navigation and language
+  switch stay usable. A browser that blocks site data gets the whole console
+  instead of a blank page.
+- Loading, empty and error states on every data view, state shown with an icon
+  and a text label rather than colour alone, 44 px targets, visible focus
+  rings, one dialog at a time, and a static wait under reduced motion.
+- The Web UI documentation moves to [docs/webui.md](docs/webui.md) with a
+  Chinese version, including the reason for each visual device.
 - `configs/claude.settings.json.example` and `accounts.example.json` are
   removed; the documentation no longer references them.
 - `GET /zed/usage` returns the active account's LLM-token JWT payload (claims

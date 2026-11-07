@@ -25,4 +25,4 @@ cargo build --release --locked --target aarch64-unknown-linux-musl
 
 The Dockerfile builds both architectures natively under QEMU (the `build` stage is `rust:1.99-alpine`, which is musl), and the runtime image contains neither `curl` nor `openssl`: health checks use `zed-proxy healthcheck`. The image runs as uid 10001 with `/data` at `0700`.
 
-Tests live in each module's `#[cfg(test)] mod tests`; there is no `tests/` directory. The management page type-checks and builds with `npx tsc --noEmit` and `npm run build` inside `webui/`.
+Tests live in each module's `#[cfg(test)] mod tests`; there is no `tests/` directory. The console in `webui/` is plain TypeScript with no UI framework; it type-checks with `npx tsc --noEmit` and builds with `npm run build`, and the bundle is a single `dist/index.html` (Vite plus `vite-plugin-singlefile`). Its structure and design rules are in [Console (WebUI)](webui.md).

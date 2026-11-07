@@ -36,7 +36,7 @@ Provider dispatch reads the `provider` field of the model from Zed's catalogue. 
 | `src/http/router.rs` | Route table and handlers, including the entry guard (authentication → 16 MiB limit → `OPTIONS` handling → common CORS/Connection headers). |
 | `src/http/auth.rs` | Gateway key loading (`ZED_API_KEY`, `ZED_API_KEY_FILE`, `<data>/api_key`), SHA-256 constant-time comparison, `Authorization`/`x-api-key` parsing, protected prefixes, loopback detection, fail-closed bind decision and the refusal message. |
 | `src/http/body.rs` | Body cap, JSON object gate, the exact 413/404 error bodies and response constructors. |
-| `src/http/static.rs` | The embedded management page (`webui/dist/index.html` via `include_bytes!`). `build.rs` fails the build when the file is missing. |
+| `src/http/static.rs` | The embedded console (`webui/dist/index.html` via `include_bytes!`), served at `GET /` with `Cache-Control: no-store`. Tests check that the bundle is a complete HTML document and contains each of the five page anchors. |
 | `src/client/chat.rs`, `responses.rs`, `anthropic.rs` | One decoder and one encoder per client protocol: request JSON → `NeutralRequest`, and `NeutralResponse` / `StreamEvent` → client JSON or SSE. JSON is written by hand because key order is normative. |
 | `src/neutral/` | The shared data types: request, message/content blocks, tools and tool choice, response, stream events, stop reasons and usage. |
 | `src/provider/openai.rs`, `anthropic.rs`, `google.rs` | Per-provider encoding of the neutral request and decoding of upstream events. Each owns its effort rules, output budget and sampling rules, tool dialect and event shapes. `openai.rs` targets the Responses API, `anthropic.rs` the Messages API, `google.rs` `generateContent`. |
@@ -54,8 +54,8 @@ Provider dispatch reads the `provider` field of the model from Zed's catalogue. 
 | `src/orb.rs` | Orb link validation, token extraction and re-encoding, portal fetch with browser headers, ledger parsing and aggregation, the fixed credit JSON, the 300 s/60 s cache and the forced-refresh rules. |
 | `src/login/mod.rs` | RSA 2048 keypair in-process, PKCS#1 DER public key, authorization URL, callback parsing, OAEP-SHA256 decryption, the single login slot with generations, the paste and local-callback flows and the CLI login. |
 | `src/error.rs` | Error kinds (`request`, `auth`, `plan`, `rate_limit`, `transient`, `client_disconnect`), HTTP status and protocol error bodies. |
-| `webui/` | TypeScript management page, built by Vite into a single HTML file. |
-| `build.rs` | Fails the build when `webui/dist/index.html` is missing, so a blank page can never be shipped silently. |
+| `webui/` | Console sources. `index.html` is the static shell (rail, top bar, five page containers, dialog, no-script fallback); `src/main.ts` does boot order, navigation and per-page render isolation; `src/text.ts` holds every visible string in Chinese and English; `src/state.ts`, `api.ts`, `data.ts`, `store.ts`, `format.ts` hold language and storage, requests and the gateway key, tolerant JSON parsing and the catalogue cache, shared view state, and formatting; `ui.ts`, `dom.ts`, `dialog.ts` hold the shared blocks; `src/pages/*.ts` holds one renderer per page; `src/theme.css` holds every style and the design tokens. Vite plus `vite-plugin-singlefile` inlines the script and CSS, so the build product is one `dist/index.html` with no external origins and fonts from system stacks. |
+| `build.rs` | Runs before the crate compiles: it only points `cargo:rerun-if-changed` at `webui/dist/index.html` and fails the build with an explicit "build the WebUI first" message when that file is missing, so a binary can never ship a blank page. The bundle is not more than that: no asset directory, no runtime file reads. |
 | `tools/genmodels.py`, `tools/catalog-fixture.json` | Regenerates the embedded fallback catalogue: the script reads the sanitised Zed `/models` fixture and writes `src/models.json` (key order matters; the three C3 limit fields are copied only when they are positive integers). Run `python3 -I tools/genmodels.py`; it is stdlib-only and resolves both paths relative to its own location. |
 
 ## Request flow
@@ -91,6 +91,15 @@ Only one login may be in progress at a time; a second start gets 409. The privat
 3. Aggregates the credit blocks into the fixed credit object and stores it with a 300-second TTL (60 seconds on failure). A failure keeps the last good numbers for `/zed/accounts/status` while the refresh response reports `credit.ok=false`.
 
 All requests go through the in-process client with proxy settings from the environment; the token and the link never appear in a response, a log or a process argument list.
+
+## Web UI embedding
+
+The console is not a separate service and has no assets on disk at run time:
+
+1. `cd webui && npm ci && npx tsc --noEmit && npm run build` type-checks the sources and writes one `webui/dist/index.html` with the JavaScript and CSS inlined. There is no `dist/assets/`, and the page references no external origin; fonts come from system stacks.
+2. `build.rs` runs before the crate compiles. It registers `webui/dist/index.html` as a rebuild input and panics with an explicit message when the file is missing, so a binary cannot be produced without a page.
+3. `src/http/static.rs` embeds that file with `include_bytes!` at compile time and serves it at `GET /` as `text/html; charset=utf-8` with `Cache-Control: no-store`. Its tests assert the bytes are a complete HTML document and contain each of the five page containers (`page-accounts`, `page-models`, `page-health`, `page-endpoints`, `page-integration`), so a half-built bundle fails `cargo test`.
+4. Because the bytes are fixed at compile time, changing the console means rebuilding the bundle and then the binary; the running process never reads `webui/` and needs no write access to it. The only data the page keeps client-side are the three storage keys `zed_lang`, `zed_api_key` and `zed_probe_model`.
 
 ## Data files
 

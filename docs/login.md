@@ -6,11 +6,11 @@ Login creates or updates `accounts.json` in the data directory. Zed's login flow
 
 ## Docker: paste callback
 
-1. Open `http://127.0.0.1:8001/` and open the accounts page.
-2. Click the button that adds a Zed account.
-3. Click the authorization link and finish signing in on the Zed page.
+1. Open `http://127.0.0.1:8001/`; the accounts page is shown by default (or open `#accounts`).
+2. Click "Add account". The login panel opens and asks the server for an authorization link.
+3. Click "Open the authorization page in Zed" and finish signing in on the Zed page.
 4. The browser lands on `http://127.0.0.1:<ZED_LOGIN_PORT>/...`. This page not loading is expected inside the container.
-5. Copy the complete URL from the address bar, paste it into the input on the accounts page, and submit. The account list refreshes with the new account.
+5. Copy the complete URL from the address bar, paste it into "Paste the callback URL" on the accounts page, and submit. The account list refreshes with the new account.
 
 `ZED_LOGIN_PORT` defaults to `58443`. It is only embedded in the authorization URL to form the callback address; nothing needs to listen on it in this mode. The authorization link is valid for 10 minutes, the RSA private key stays in process memory, one authorization maps to one login, and only one login can be in progress at a time. Nothing opens a browser: the link is returned in the response and shown in the page.
 
