@@ -16,9 +16,9 @@
 
 <a href="#quick-start">Quick start</a> · <a href="#documentation">Documentation</a> · <a href="docs/architecture.md">Architecture</a> · <a href="CONTRIBUTING.md">Contributing</a>
 
-<img src="docs/assets/webui-accounts.en.png" alt="ZedProxy console, accounts page" width="860">
+<img src="docs/assets/webui-accounts.en.png" alt="ZedProxy gateway panel, accounts page" width="860">
 
-<sub>The accounts page: scheduling order, token and plan state, Orb balance and live model checks per account.</sub>
+<sub>The accounts page: scheduling order, token and subscription plan state, Orb balance and live model checks per account. Screenshot from the fake-data test gateway; no real account or credential appears.</sub>
 
 </div>
 
@@ -39,7 +39,7 @@ This is the 0.3.0 Rust implementation. It runs as a single static binary: HTTP, 
 - Gemini support: client `reasoning_effort` maps to Gemini `thinkingLevel`, upstream parts marked `thought: true` are split into thinking output instead of visible text, tool schemas are cleaned to the Gemini subset, and tool calls round-trip in both directions.
 - Account pool with cooldowns and failover. Auth errors, rate limits, and repeated transient upstream errors bench an account for a period, and the next request is attempted on another account.
 - Request-level failures (upstream `400`/`404`/`413`/`415`/`422`, including `status.failed` wrappers) are returned as `400` with the upstream message and are never retried, cooled down, or failed over.
-- Web console served at `/`, in English and Chinese, with five pages: accounts, models, diagnostics, routes and clients.
+- Gateway panel served at `/`, in English and Chinese, with five pages: accounts, model catalogue, diagnostics, routes and clients.
 - Credit balance display: attach an Orb portal link to an account and see used and remaining credit, the reset date and a usage bar on the accounts page, with a "Refresh Orb balance" action.
 - Model catalogue page that lists every model's reasoning levels and context length, with a "Refresh catalogue" action that pulls from Zed on demand.
 - Selectable probe model: probe every account with any model from the catalogue, and the accounts page remembers the choice.
@@ -51,19 +51,19 @@ This is the 0.3.0 Rust implementation. It runs as a single static binary: HTTP, 
 
 ## Web UI
 
-The console at `/` is served by the gateway itself. A side rail carries the service state (running or not, model count, listening address) and the navigation; the page area shows one of five pages:
+The gateway panel at `/` is served by the gateway itself. The dark side rail carries the service state (running, model count, address), the five-entry navigation and two short notes; the page area shows one of five pages:
 
-- **Accounts**: the account list in scheduling order, with plan, quota, Orb balance and the latest probe for each account. A probe model selector and three buttons sit above the list: "Refresh account status" re-reads tokens and plans without calling a model, "Refresh Orb balance" re-reads Orb only, and "Probe all accounts" sends one short request per account. A banner under the page header says which model and how many output tokens a probe uses.
-- **Models**: the forwarded catalogue with each model's provider, default and supported reasoning levels, and context length. "Refresh catalogue" pulls it from Zed on demand; "Use for probes" picks the model the account page probes with.
-- **Diagnostics**: six read-only checks in a fixed order (service, accounts, token validity, and the three protocol routes), each run as soon as the page opens, with a pass/fail state and a finish time.
-- **Routes**: every route the gateway serves, grouped, with the method and whether a gateway key is needed. The page sends no requests.
-- **Clients**: copy-ready snippets for Codex, Claude Code, OpenCode and a shell request, built from the address you are reading the page on, with a placeholder key and a model from the catalogue.
+- **Accounts**: the account list in scheduling order, with subscription plan, quota usage, Orb balance and the latest probe for each account. A probe model selector and three buttons sit above the list: "Refresh account status" re-reads tokens and subscription plans without calling a model, "Refresh Orb balance" re-reads Orb only, and "Probe all accounts" sends one short request per account. A banner under the page header says which model and how many output tokens a probe uses.
+- **Model catalogue**: the forwarded catalogue with each model's provider, default and supported reasoning levels, and context length. "Refresh catalogue" pulls it from Zed on demand; "Use for probes" picks the model the accounts page probes with.
+- **Diagnostics**: six read-only checks in a fixed order (service, accounts configured, token validity, and the three protocol routes), run once when the panel loads, with a pass/fail state and a finish time.
+- **Routes**: the three client protocols, then every route the gateway serves in six static groups, each row with the method and whether a gateway key is needed. The page sends no requests.
+- **Clients**: base-address notes and four copy-ready snippets (Codex, Claude Code, OpenCode, a shell request), built from the address you are reading the page on, with a placeholder key and a model from the catalogue.
 
-All five pages exist in both languages; the switch in the top bar keeps the current page. Every data view has an empty, loading and error state, a failed refresh keeps the values already on screen, and a failure on one page does not affect the others.
+All five pages exist in both languages; the switch in the top bar changes the language in place and keeps the current page. Every data view has an empty, loading and error state, a failed refresh keeps the values already on screen, and a failure on one page does not affect the others.
 
-<p align="center"><img src="docs/assets/webui-health.en.png" alt="ZedProxy console, diagnostics page" width="760"></p>
+<p align="center"><img src="docs/assets/webui-health.en.png" alt="ZedProxy gateway panel, diagnostics page" width="760"></p>
 
-<p align="center"><sub>The diagnostics page: six read-only checks, no inference request is sent.</sub></p>
+<p align="center"><sub>The diagnostics page: six read-only checks, no inference request is sent. Screenshot from the fake-data test gateway.</sub></p>
 
 ## Quick start
 
@@ -114,7 +114,7 @@ Streaming and non-streaming are supported on all three, and each route can route
 | [Known limitations](docs/limitations.md) | What to expect and what is not verified |
 | [Terms and risk](docs/terms-risk.md) | Unofficial status and Zed's Terms of Service |
 | [Development](docs/development.md) | Building and testing from source |
-| [Console (WebUI)](docs/webui.md) | Console files, design rules and behaviour |
+| [Gateway panel (WebUI)](docs/webui.md) | Panel files, design rules and behaviour |
 
 ## Acknowledgements
 

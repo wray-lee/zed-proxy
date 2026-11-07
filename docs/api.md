@@ -6,7 +6,7 @@ All routes are handled by the router in `src/http/router.rs`. "Gateway key" mean
 
 | Method | Path | Gateway key | Purpose |
 | --- | --- | --- | --- |
-| any | `/` | no | Web console (single embedded HTML page) |
+| any | `/` | no | Gateway panel (single embedded HTML page) |
 | GET | `/health` | no | Liveness probe, returns `{"status":"ok"}` |
 | GET | `/v1/models` | yes | Zed's full model catalogue in OpenAI format, plus a Codex `models` catalogue. Cached for an hour; nothing is filtered except models Zed marks disabled. The bare `gpt-5.6` alias for Sol is added. |
 | any | `/api/event_logging/batch` | no | Accepts client event batches and returns `{"status":"ok"}` |

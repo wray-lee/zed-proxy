@@ -61,10 +61,10 @@ HTTP contract is preserved; the changes below are the ones a user can notice.
   layout is new: a dark side rail with the service state and a numbered
   navigation, two core colours (paper and ink) plus one terracotta accent,
   serif headings over sans body text, hairline-separated rows instead of a card
-  grid, and a 4/8/12 px radius scale. The five pages are Accounts, Models,
-  Diagnostics, Routes and Clients; the browser's language is used unless
-  `zed_lang` says otherwise, and the switch in the top bar stays on the current
-  page.
+  grid, and a 4/8/12 px radius scale. The five pages are Accounts, Model
+  catalogue, Diagnostics, Routes and Clients; the browser's language is used
+  unless `zed_lang` says otherwise, and the switch in the top bar changes the
+  language in place on the current page.
 - Every page renders in its own guard with an error surface and a retry: one
   failing page no longer stops the others, and the navigation and language
   switch stay usable. A browser that blocks site data gets the whole console
@@ -108,6 +108,27 @@ HTTP contract is preserved; the changes below are the ones a user can notice.
   RSA keypair is generated and used in-process.
 - Streaming no longer drops upstream lines when one network chunk contains
   several events.
+- A successful probe no longer wipes the account's Orb balance, its link state
+  or its billing flags: the merge applies only the fields a probe response
+  actually carries, and a probe without a token verdict leaves the earlier one
+  alone.
+- Throttled refreshes now say so in place. A balance refresh that returns
+  `retry_after_s` reports the wait alongside any successes, and the catalogue
+  refresh reports its wait seconds instead of a generic failure.
+- A rejected login shows its error inline at the paste field, keeps the pasted
+  value, and gives an actionable line instead of a raw status code.
+- Choosing a language in the top bar applies to the current session even when
+  site data is blocked: the pages are redrawn in place rather than reloaded, so
+  no fourth storage key is added.
+- Account actions carry the account name in their accessible name while keeping
+  the visible label first (`Probe this account` followed by the name), so voice
+  and screen-reader users can tell the cards apart.
+- The account card reports Zed's overdue-bill and account-too-young flags from
+  the status response next to the period end date, and shows nothing when the
+  server does not set them.
+- `webui/src/theme.css` declares each recurring property once on the role that
+  owns it (text, hairline frame, machine text) instead of repeating it inside
+  every component rule.
 
 ### Removed
 

@@ -1,8 +1,8 @@
 [← Back to README](../README.md)
 
-# Console (WebUI)
+# Gateway panel (WebUI)
 
-The console is the gateway's own management page: the TypeScript sources in `webui/` are built by Vite into a single `webui/dist/index.html`, embedded at compile time by `src/http/static.rs`, and served at `GET /`. This page covers the interface itself; routes, fields and error codes are in [API endpoints](api.md).
+The gateway panel is the gateway's own management page: the TypeScript sources in `webui/` are built by Vite into a single `webui/dist/index.html`, embedded at compile time by `src/http/static.rs`, and served at `GET /`. This page covers the interface itself; routes, fields and error codes are in [API endpoints](api.md).
 
 ## Files
 
@@ -18,19 +18,20 @@ The console is the gateway's own management page: the TypeScript sources in `web
 | `webui/src/format.ts` | Dates, money, percentages, enum-to-copy mappings |
 | `webui/src/ui.ts`, `dom.ts`, `dialog.ts` | Shared loading/empty/error blocks, element builder, the single modal implementation |
 | `webui/src/pages/*.ts` | One renderer per page |
+| `webui/src/selfcheck.ts` | Dev-only assertion script for the merge, billing and accessible-name branches; not part of the bundle |
 | `webui/src/theme.css` | All styles and design tokens |
 
 ## Boot order and render isolation
 
 The order is fixed: the frame renders first (rail, top bar, navigation, language switch, toast layer, five page containers), then language detection and storage reads, then each page renders and loads its own data, and only then the clock, visibility and hash listeners attach.
 
-The navigation is plain buttons, not a router library: a valid hash shows its page at load, `hashchange` follows the back and forward buttons without reloading, and each entry is marked with `aria-current="page"`. The account entry carries a count badge that stays absent until the account list has loaded, so a failed load never reads as "0 accounts". At 780 px wide and below the rail turns into a header above the content and the navigation wraps; every entry keeps a 44 px target. The metrics grid drops to two columns at 960 px and the route table stacks its columns there too. Diagnostics runs its six checks when the page first opens, not on every visit.
+The navigation is plain buttons, not a router library: a valid hash shows its page at load, `hashchange` follows the back and forward buttons without reloading, and each entry is marked with `aria-current="page"`. The account entry carries a count badge that stays absent until the account list has loaded, so a failed load never reads as "0 accounts". At 780 px wide and below the rail turns into a header above the content and the navigation wraps; every entry keeps a 44 px target. The metrics grid drops to two columns at 960 px and the route table stacks its columns there too. Diagnostics runs its six checks once when the panel loads; switching back to the page does not run them again, and "Check again" is the only re-run.
 
-Each page render is wrapped in its own guard. When one page throws, that page shows an error surface (what happened, a plain-language reason, retry, reload) while the other pages, the navigation and the language switch stay usable. The error surface has its own fallback: if the DOM helpers used to build it also fail, the container still gets a single line of text. Exceptions inside async updates put only that view into its error state. No module-level code reads local storage, so a browser that blocks site data still renders the whole console.
+Each page render is wrapped in its own guard. When one page throws, that page shows an error surface (what happened, a plain-language reason, retry, reload) while the other pages, the navigation and the language switch stay usable. The error surface has its own fallback: if the DOM helpers used to build it also fail, the container still gets a single line of text. Exceptions inside async updates put only that view into its error state. No module-level code reads local storage, so a browser that blocks site data still renders the whole panel.
 
 ## Design direction
 
-**Reader and setting.** The reader runs this gateway. They open a one-off management page on localhost or a LAN address to check whether accounts still work, whether tokens expired, how much quota is left, and whether the model catalogue moved. The task is verification, not operations, so the layout is organised around density and scan speed rather than dashboard-style metrics.
+**Reader and setting.** The reader runs this gateway. They open a one-off gateway panel on localhost or a LAN address to check whether accounts still work, whether tokens expired, how much quota is left, and whether the model catalogue moved. The task is verification, not operations, so the layout is organised around density and scan speed rather than dashboard-style metrics.
 
 **Colour (two core colours plus one accent).** Paper `#f7f4ec` and ink `#1d1c19` carry every background and text level. The accent is terracotta `#9c3a1a`, and it is the only colour that marks attention: a primary action (probe all, add account, save an Orb link, finish a login, refresh the catalogue, run the checks), the left edge of banners and of the active account, the selected model row, the login panel edge, the top rule of each protocol strip, the balance fill, the avatar wash, the diamond in front of a key-required route, the focus ring and the spinner arc. Links use the darker variant `#7f2d12` so body-sized link text clears 4.5:1 on paper. The page is almost entirely text and hairlines, so one signal colour is enough; spreading it further would stop marking a primary action. Green, amber and red exist only as functional status colours on tags and notices; they are never decoration.
 
@@ -57,18 +58,18 @@ Each page render is wrapped in its own guard. When one page throws, that page sh
 | Page | Hash | Contents |
 | --- | --- | --- |
 | Accounts | `#accounts` | Four header controls (probe model, refresh account status, refresh Orb balance, probe all), a cost banner, four metrics, the account list, add-account and the login panel |
-| Models | `#models` | Catalogue refresh, an explainer banner, model rows (display name, id, provider, description, default and supported levels, context length, use-for-probe) |
+| Model catalogue | `#models` | Catalogue refresh, an explainer banner, model rows (display name, id, provider, description, default and supported levels, context length, use-for-probe) |
 | Diagnostics | `#health` | Six read-only checks in a fixed order, per-row state, a summary with finish time, run again |
-| Routes | `#routes` | Three protocol entries and six static route groups (page and liveness, models and protocols, compatibility, accounts and quota, catalogue and identity, login), each row with method and whether a gateway key is needed; the page sends no requests |
-| Clients | `#clients` | Base-address notes and four copy-ready snippets (Codex, Claude Code, OpenCode, a shell request) |
+| Routes | `#endpoints` | Three protocol entries and six static route groups (page and liveness, models and protocols, compatibility, accounts and quota, catalogue and identity, login), each row with method and whether a gateway key is needed; the page sends no requests |
+| Clients | `#integration` | Base-address notes and four copy-ready snippets (Codex, Claude Code, OpenCode, a shell request) |
 
 The first three navigation entries form "Runtime", the last two "Development". The current page is marked with `aria-current="page"` and an underline, not colour alone.
 
 ## Language and storage
 
-Detection reads `zed_lang` first and accepts only the exact values `zh` or `en`; otherwise `navigator.language` decides, with a `zh` prefix meaning Chinese. Switching language writes the key and reloads the document, keeping the hash so the reader stays on the same page.
+Detection reads `zed_lang` first and accepts only the exact values `zh` or `en`; otherwise `navigator.language` decides, with a `zh` prefix meaning Chinese. Switching language writes the key and redraws the frame and all five pages in place, so the reader stays on the same page and the address fragment does not change.
 
-Only three keys are used: `zed_lang`, `zed_api_key`, `zed_probe_model`. Every read and write goes through the tolerant wrappers in `state.ts`: a failed read counts as absent, a failed write is ignored while the in-memory value keeps working. With site data blocked, language falls back to the browser, the key lasts for the session, and the probe model returns to `gpt-5.6-luna`; all five pages and the navigation still render. Unknown historical keys are neither read nor cleaned up.
+Only three keys are used: `zed_lang`, `zed_api_key`, `zed_probe_model`. Every read and write goes through the tolerant wrappers in `state.ts`: a failed read counts as absent, a failed write is ignored while the in-memory value keeps working. With site data blocked, language falls back to the browser but a language picked in the top bar still applies to the current session (the pages are redrawn in place, no reload), the key lasts for the session, and the probe model returns to `gpt-5.6-luna`; all five pages and the navigation still render. Unknown historical keys are neither read nor cleaned up.
 
 ## Gateway key and 401s
 

@@ -36,7 +36,7 @@ provider 分发读取 Zed 目录中该模型的 `provider` 字段。只有目录
 | `src/http/router.rs` | 路由表与各 handler，包括入口守卫（鉴权 → 16 MiB 上限 → `OPTIONS` 处理 → 公共 CORS/Connection 头）。 |
 | `src/http/auth.rs` | 网关 key 加载（`ZED_API_KEY`、`ZED_API_KEY_FILE`、`<data>/api_key`）、SHA-256 常量时间比较、`Authorization`/`x-api-key` 解析、受保护前缀、回环判断、fail-closed 绑定决策与拒绝文案。 |
 | `src/http/body.rs` | 请求体上限、JSON 对象闸门、精确的 413/404 错误体与响应构造。 |
-| `src/http/static.rs` | 内嵌控制台（`include_bytes!` 读 `webui/dist/index.html`），由 `GET /` 返回并带 `Cache-Control: no-store`。测试检查产物是完整 HTML 文档且包含五个页面锚点。 |
+| `src/http/static.rs` | 内嵌网关面板（`include_bytes!` 读 `webui/dist/index.html`），由 `GET /` 返回并带 `Cache-Control: no-store`。测试检查产物是完整 HTML 文档且包含五个页面锚点。 |
 | `src/client/chat.rs`、`responses.rs`、`anthropic.rs` | 每种客户端协议一个解码器和一个编码器：请求 JSON → `NeutralRequest`，`NeutralResponse` / `StreamEvent` → 客户端 JSON 或 SSE。键顺序是规范的一部分，因此 JSON 手工写出。 |
 | `src/neutral/` | 共享数据类型：请求、消息与内容块、工具与工具选择、响应、流事件、结束原因与用量。 |
 | `src/provider/openai.rs`、`anthropic.rs`、`google.rs` | 各 provider 的中立请求编码与上游事件解码。各自负责推理档位、输出预算、采样规则、工具方言与事件形状。`openai.rs` 面向 Responses API，`anthropic.rs` 面向 Messages API，`google.rs` 面向 `generateContent`。 |
@@ -54,7 +54,7 @@ provider 分发读取 Zed 目录中该模型的 `provider` 字段。只有目录
 | `src/orb.rs` | Orb 链接校验、token 提取与再编码、带浏览器头的门户请求、ledger 解析与聚合、固定 credit JSON、300 秒/60 秒缓存与强制刷新规则。 |
 | `src/login/mod.rs` | 进程内 RSA 2048 密钥对、PKCS#1 DER 公钥、授权 URL、回调解析、OAEP-SHA256 解密、带代数号的单登录槽、粘贴与本地回调流程、命令行登录。 |
 | `src/error.rs` | 错误分类（`request`、`auth`、`plan`、`rate_limit`、`transient`、`client_disconnect`）、HTTP 状态与各协议错误体。 |
-| `webui/` | 控制台源码。`index.html` 是静态骨架（侧栏、顶栏、五个页面容器、对话框、无脚本兜底）；`src/main.ts` 负责启动顺序、导航与逐页渲染隔离；`src/text.ts` 保存全部中英可见文案；`src/state.ts`、`api.ts`、`data.ts`、`store.ts`、`format.ts` 分别负责语言与存储、请求与网关密钥、容错 JSON 解析与目录缓存、共享视图状态、格式化；`ui.ts`、`dom.ts`、`dialog.ts` 是共享块；`src/pages/*.ts` 每页一个渲染器；`src/theme.css` 是全部样式与设计令牌。Vite 加 `vite-plugin-singlefile` 把脚本与样式内联，产物是单个不含外部域名的 `dist/index.html`，字体全部来自系统栈。 |
+| `webui/` | 网关面板源码。`index.html` 是静态骨架（侧栏、顶栏、五个页面容器、对话框、无脚本兜底）；`src/main.ts` 负责启动顺序、导航与逐页渲染隔离；`src/text.ts` 保存全部中英可见文案；`src/state.ts`、`api.ts`、`data.ts`、`store.ts`、`format.ts` 分别负责语言与存储、请求与网关密钥、容错 JSON 解析与目录缓存、共享视图状态、格式化；`ui.ts`、`dom.ts`、`dialog.ts` 是共享块；`src/pages/*.ts` 每页一个渲染器；`src/selfcheck.ts` 是仅供开发、不进产物的自检脚本；`src/theme.css` 是全部样式与设计令牌。Vite 加 `vite-plugin-singlefile` 把脚本与样式内联，产物是单个不含外部域名的 `dist/index.html`，字体全部来自系统栈。 |
 | `build.rs` | 在 crate 编译前运行：只把 `webui/dist/index.html` 登记为 `cargo:rerun-if-changed` 输入，并在该文件缺失时以明确的「先构建 WebUI」信息让构建失败，避免二进制静默携带空白页面。产物之外没有资源目录，运行时也不读任何文件。 |
 | `tools/genmodels.py`、`tools/catalog-fixture.json` | 重新生成内嵌兜底目录：脚本读取脱敏的 Zed `/models` 夹具并写出 `src/models.json`（键顺序是规范；C3 的三个上限字段仅在为正整数时复制）。运行 `python3 -I tools/genmodels.py`；脚本只用标准库，两个路径都相对脚本自身位置解析。 |
 
@@ -94,12 +94,12 @@ provider 分发读取 Zed 目录中该模型的 `provider` 字段。只有目录
 
 ## Web UI 的嵌入方式
 
-控制台不是一个独立服务，运行时也没有磁盘上的资源：
+网关面板不是一个独立服务，运行时也没有磁盘上的资源：
 
 1. `cd webui && npm ci && npx tsc --noEmit && npm run build` 先做类型检查，再写出单个 `webui/dist/index.html`，JavaScript 与 CSS 已内联。没有 `dist/assets/`，页面不引用任何外部域名，字体来自系统栈。
 2. `build.rs` 在 crate 编译前运行：把 `webui/dist/index.html` 登记为重建输入，文件缺失时直接 panic 并给出明确提示，所以不可能产出一个没有页面的二进制。
 3. `src/http/static.rs` 用 `include_bytes!` 在编译期嵌入该文件，由 `GET /` 以 `text/html; charset=utf-8` 返回，并带 `Cache-Control: no-store`。它的测试断言字节是完整 HTML 文档且包含五个页面容器（`page-accounts`、`page-models`、`page-health`、`page-endpoints`、`page-integration`），构建不完整的产物会让 `cargo test` 失败。
-4. 字节在编译期固定，改动控制台必须依次重建产物与二进制；运行中的进程从不读取 `webui/`，也不需要它的写权限。页面只把三个键保存在浏览器一侧：`zed_lang`、`zed_api_key`、`zed_probe_model`。
+4. 字节在编译期固定，改动面板必须依次重建产物与二进制；运行中的进程从不读取 `webui/`，也不需要它的写权限。页面只把三个键保存在浏览器一侧：`zed_lang`、`zed_api_key`、`zed_probe_model`。
 
 ## 数据文件
 
