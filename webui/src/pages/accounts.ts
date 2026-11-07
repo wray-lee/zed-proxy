@@ -3,11 +3,13 @@
 
 import { h, clear, pageRoot } from '../dom.ts'
 import { describe, failureFrom } from '../api.ts'
+import type { Failure } from '../api.ts'
 import { completeLogin } from '../data.ts'
 import type { AccountRow, StatusRow } from '../data.ts'
 import { billingNoteCopy, dateOnly, dateTime, fraction, money, planName, probeView, quotaView, orbErrorCopy, withAccountName } from '../format.ts'
 import { confirmDialog } from '../dialog.ts'
 import { state } from '../state.ts'
+import type { Lang } from '../text.ts'
 import { tf, tr } from '../text.ts'
 import { badge, emptyBlock, errorBlock, iconForTone, loadingBlock, pageHead, section, toast } from '../ui.ts'
 import {
@@ -181,11 +183,13 @@ function costBody(): HTMLElement {
     h('p', {}, tr('costBody', lang)),
   ]
   if (report !== null) {
-    if (report.maxOutputTokens === null) parts.push(h('p', {}, tf('costDetailNoLimit', lang, slug)))
-    else parts.push(h('p', {}, tf('costDetail', lang, slug, report.maxOutputTokens)))
+    // The probe response reports the limit that actually applied; it wins over
+    // the catalogue estimate either way.
+    if (report.maxOutputTokens === null) parts.push(h('p', {}, tf('budgetReportedNoLimit', lang, slug)))
+    else parts.push(h('p', {}, tf('budgetReported', lang, slug, report.maxOutputTokens)))
     parts.push(h('p', {}, tf('costProbeUnknown', lang, effortLabel(report.effort))))
   } else {
-    parts.push(h('p', {}, tf('costDetail', lang, slug, budget.tokens ?? 32)))
+    parts.push(h('p', {}, tf('budgetEstimated', lang, slug, budget.tokens ?? 32)))
     const model = view.catalogue.models.find((row) => row.slug === slug)
     parts.push(h('p', {}, tf('costProbeUnknown', lang, effortLabel(model?.defaultEffort ?? null))))
   }
@@ -439,13 +443,16 @@ function accountCard(row: AccountRow): HTMLElement {
   const ends = dateOnly(status?.subscriptionEndsAt ?? null, lang)
   const probe = status ? probeView(status.modelState, lang) : null
   const probeWhen = status ? dateTime(status.modelCheckedAt, lang) : null
+  const cooldownS = status?.cooldownS ?? 0
+  const cooldown = cooldownS > 0 ? tf('probeCooldown', lang, cooldownS) : null
   const probeNote = status
     ? [
+        cooldown,
         status.modelLatencyMs !== null && status.modelLatencyMs > 0 ? tf('probeLatency', lang, status.modelLatencyMs) : null,
         probeWhen ? tf('probeCheckedAt', lang, probeWhen) : null,
       ]
         .filter((part): part is string => part !== null)
-        .join(' · ')
+        .join(' · ') || null
     : null
   const quotaText = status
     ? quotaView(
@@ -516,8 +523,12 @@ async function submitOrbLink(account: string): Promise<void> {
     toast(tf('orbSaved', lang, account), 'ok')
     await Promise.all([reloadAccounts(), reloadStatus()])
   } else {
-    orbErrors.set(account, describe(failure, lang))
-    toast(`${tr('orbUnknownError', lang)} ${describe(failure, lang)}`, 'bad')
+    // The server's own line is never echoed: it may quote the link. A 400 is
+    // the format rejection, so it gets the actionable requirement instead.
+    const line = failure.kind === 'network' ? tr('errorNetwork', lang) : failure.status === 400 ? tr('orbSaveRejected', lang) : describe(failure, lang)
+    const format = failure.kind === 'status' && failure.status === 400 ? ` ${tr('orbInvalidFormat', lang)}` : ''
+    orbErrors.set(account, `${line}${format}`)
+    toast(`${tr('orbUnknownError', lang)} ${line}${format}`, 'bad')
   }
   render()
 }
@@ -528,6 +539,8 @@ async function removeOrbLink(account: string): Promise<void> {
   if (failure === null) {
     toast(tf('orbCleared', lang, account), 'ok')
     await Promise.all([reloadAccounts(), reloadStatus()])
+  } else if (failure.kind === 'network') {
+    toast(`${tr('orbUnknownError', lang)} ${tr('writeUncertain', lang)}`, 'bad')
   } else {
     toast(`${tr('orbUnknownError', lang)} ${describe(failure, lang)}`, 'bad')
   }
@@ -539,6 +552,9 @@ async function doSwitch(account: string): Promise<void> {
   const failure = await switchTo(account)
   if (failure === null) {
     toast(tf('switchSuccess', lang, account), 'ok')
+  } else if (failure.kind === 'network') {
+    // No answer arrived: the switch may still have landed, so say how to check.
+    toast(`${tr('switchFailed', lang)} ${tr('switchUncertain', lang)}`, 'bad')
   } else {
     toast(`${tr('switchFailed', lang)} ${describe(failure, lang)}`, 'bad')
   }
@@ -644,6 +660,31 @@ async function startLoginFlow(): Promise<void> {
   render()
 }
 
+/** Per-status login copy: 409 and 410 name their own cause, 400 explains the URL. */
+export function loginErrorCopy(failure: Failure, lang: Lang): string {
+  if (failure.kind === 'network') return tr('errorNetwork', lang)
+  switch (failure.status) {
+    case 401:
+      return tr('errorUnauthorized', lang)
+    case 409:
+      return tr('loginNoPending', lang)
+    case 410:
+      return tr('errorLoginExpired', lang)
+    case 500:
+      return tr('loginSaveFailed', lang)
+    case 400: {
+      const detail = failure.detail ?? ''
+      if (/too long/i.test(detail)) return tr('loginCallbackTooLong', lang)
+      if (/decrypt|access token/i.test(detail)) return tr('loginDecryptFailed', lang)
+      if (/valid JSON/i.test(detail)) return tr('loginCredentialInvalid', lang)
+      if (/user_id|access_token/i.test(detail)) return tr('loginCallbackMissing', lang)
+      return tr('loginCallbackInvalid', lang)
+    }
+    default:
+      return tr('loginCallbackInvalid', lang)
+  }
+}
+
 async function submitLogin(): Promise<void> {
   const lang = state.lang
   const input = document.getElementById('login-url-input')
@@ -671,15 +712,10 @@ async function submitLogin(): Promise<void> {
   } catch (err) {
     login.phase = 'waiting'
     // Server wording stays in the browser console; the field gets a fixed,
-    // actionable line so no raw status text or code reaches the page.
+    // actionable line per status class so no raw status text reaches the page.
     const failure = failureFrom(err)
     console.error('[console] login complete failed', failure)
-    login.error =
-      failure.kind === 'network'
-        ? tr('errorNetwork', lang)
-        : failure.status === 401
-          ? tr('errorUnauthorized', lang)
-          : tr('loginCallbackInvalid', lang)
+    login.error = loginErrorCopy(failure, lang)
     toast(tr('loginFailed', lang), 'bad')
   }
   render()
