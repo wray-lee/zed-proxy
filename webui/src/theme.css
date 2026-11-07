@@ -57,7 +57,6 @@ html {
 body {
   margin: 0;
   background: var(--paper);
-  color: var(--ink);
   font-family: var(--sans);
   font-size: 1rem;
   line-height: 1.55;
@@ -83,7 +82,6 @@ ol {
 
 code,
 pre {
-  font-family: var(--mono);
   font-size: 0.875rem;
 }
 
@@ -113,12 +111,185 @@ a:hover {
   outline-color: #f4f0e6;
 }
 
+/* ---------- Shared declaration layers ----------
+ *
+ * A property that recurs across many blocks is declared once here, on the
+ * role that owns it, instead of being repeated inside every component rule.
+ * The component rules further down carry only what is specific to them and
+ * still follow these layers, so a later override keeps winning exactly as
+ * it did when the same declaration sat inside each rule.
+ */
+
+/* Default ink for copy and form controls */
+body,
+.trail strong,
+.btn,
+.btn-quiet:hover:not(:disabled),
+.field-input,
+.select,
+.empty-title,
+.dialog {
+  color: var(--ink);
+}
+
+/* Secondary text: captions, labels, hints and metadata */
+.trail,
+.topbar-meta,
+.lang-btn,
+.lede,
+.field-label,
+.field-hint,
+.banner p,
+.metric-label,
+.section-note,
+.account-meta,
+.badge[data-tone="idle"],
+.detail-label,
+.static-note,
+.model-slug,
+.model-desc,
+.chip-label,
+.check-icon,
+.check-detail,
+.check-state,
+.protocol-path,
+.route-purpose,
+.key-flag,
+.snippet-note,
+.dialog-text {
+  color: var(--ink-soft);
+}
+
+/* Machine text: identifiers, paths and values */
+code,
+pre,
+.brand-mark,
+.nav-index,
+.nav-badge,
+.trail,
+.topbar-meta,
+.account-meta,
+.orb-figures,
+.login-link,
+.model-slug,
+.chip,
+.protocol-path,
+.method,
+.route-path {
+  font-family: var(--mono);
+}
+
+/* Hairline frame around blocks and containers */
+.boot-note,
+.banner,
+.metrics,
+.account-card,
+.progress,
+.login-panel,
+.model-list,
+.chip,
+.check-summary,
+.check-list,
+.protocol,
+.route-table,
+.snippet {
+  border: 1px solid var(--line);
+}
+
+/* Long identifiers and paths wrap instead of overflowing */
+.trail strong,
+.page-title,
+.metric-value,
+.metric-note,
+.account-name,
+.account-meta,
+.detail-value,
+.login-link,
+.model-name,
+.model-slug,
+.check-detail,
+.protocol-path,
+.route-path {
+  overflow-wrap: anywhere;
+}
+
+/* Rows centre their contents vertically */
+.skip-link,
+.brand,
+.nav-item,
+.topbar,
+.topbar-meta,
+.btn,
+.card-head,
+.badge,
+.card-actions,
+.chip-row,
+.snippet-head {
+  align-items: center;
+}
+
+/* Head rows push a trailing value to the far edge */
+.topbar,
+.section-head,
+.orb-head,
+.check-summary,
+.snippet-head {
+  justify-content: space-between;
+}
+
+/* Short labels stay on one line */
+.btn,
+.check-state,
+.key-flag,
+.visually-hidden {
+  white-space: nowrap;
+}
+
+/* Inline controls keep icon and label on one baseline */
+.skip-link,
+.btn,
+.badge {
+  display: inline-flex;
+}
+
+/* Centred marks and icons sit in a square box */
+.brand-mark,
+.avatar,
+.check-icon {
+  place-items: center;
+}
+
+/* Pill corners for tags, counters and the quota bar */
+.nav-badge,
+.badge,
+.progress {
+  border-radius: 999px;
+}
+
+/* Round corners for status dots and the busy spinner */
+.status-dot,
+.loading .spinner {
+  border-radius: 50%;
+}
+
+/* The rail and the workspace stack their children */
+.rail,
+.workspace {
+  flex-direction: column;
+}
+
+/* Overlays and off-screen helpers leave the normal flow */
+.skip-link,
+.visually-hidden,
+.dialog-close {
+  position: absolute;
+}
+
 /* Boot fallback: only visible before the script takes over. */
 .boot-note {
   max-width: 44rem;
   margin: var(--space-6) auto;
   padding: var(--space-5);
-  border: 1px solid var(--line);
   border-left: 4px solid var(--bad);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
@@ -149,12 +320,9 @@ a:hover {
 }
 
 .skip-link {
-  position: absolute;
   left: -9999px;
   top: var(--space-2);
   z-index: 20;
-  display: inline-flex;
-  align-items: center;
   min-height: 44px;
   padding: var(--space-2) var(--space-4);
   background: var(--ink);
@@ -170,7 +338,6 @@ a:hover {
 
 .rail {
   display: flex;
-  flex-direction: column;
   gap: var(--space-6);
   padding: var(--space-5) var(--space-5) var(--space-6);
   background: var(--rail);
@@ -179,18 +346,15 @@ a:hover {
 
 .brand {
   display: flex;
-  align-items: center;
   gap: var(--space-3);
 }
 
 .brand-mark {
   display: grid;
-  place-items: center;
   width: 2.25rem;
   height: 2.25rem;
   border: 1px solid var(--rail-soft);
   border-radius: var(--radius-s);
-  font-family: var(--mono);
   font-size: 0.85rem;
   letter-spacing: 0.06em;
   color: var(--rail-text);
@@ -238,7 +402,6 @@ a:hover {
 .status-dot {
   width: 0.55rem;
   height: 0.55rem;
-  border-radius: 50%;
   border: 1px solid currentColor;
   flex: none;
   transform: translateY(-1px);
@@ -282,7 +445,6 @@ a:hover {
 
 .nav-item {
   display: flex;
-  align-items: center;
   gap: var(--space-2);
   min-height: 44px;
   padding: var(--space-2) var(--space-3);
@@ -312,7 +474,6 @@ a:hover {
 }
 
 .nav-index {
-  font-family: var(--mono);
   font-size: 0.72rem;
   color: var(--rail-soft);
 }
@@ -322,8 +483,6 @@ a:hover {
   min-width: 1.6rem;
   padding: 0 var(--space-2);
   border: 1px solid var(--rail-line);
-  border-radius: 999px;
-  font-family: var(--mono);
   font-size: 0.74rem;
   text-align: center;
   color: var(--rail-soft);
@@ -344,14 +503,11 @@ a:hover {
 .workspace {
   min-width: 0;
   display: flex;
-  flex-direction: column;
 }
 
 .topbar {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-6);
   border-bottom: 1px solid var(--line);
@@ -363,27 +519,20 @@ a:hover {
   align-items: baseline;
   gap: var(--space-2);
   min-width: 0;
-  font-family: var(--mono);
   font-size: 0.8rem;
-  color: var(--ink-soft);
 }
 
 .trail strong {
   font-family: var(--sans);
   font-size: 0.95rem;
   font-weight: 600;
-  color: var(--ink);
-  overflow-wrap: anywhere;
 }
 
 .topbar-meta {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: var(--space-3);
-  font-family: var(--mono);
   font-size: 0.8rem;
-  color: var(--ink-soft);
 }
 
 .lang {
@@ -399,7 +548,6 @@ a:hover {
   padding: 0 var(--space-3);
   border: 0;
   background: transparent;
-  color: var(--ink-soft);
   font: inherit;
   cursor: pointer;
 }
@@ -491,12 +639,10 @@ main:focus {
   font-weight: 600;
   line-height: 1.15;
   letter-spacing: -0.01em;
-  overflow-wrap: anywhere;
 }
 
 .lede {
   max-width: 46rem;
-  color: var(--ink-soft);
 }
 
 .page-actions {
@@ -510,8 +656,6 @@ main:focus {
 /* ---------- Buttons and fields ---------- */
 
 .btn {
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
   gap: var(--space-2);
   min-height: 44px;
@@ -520,12 +664,10 @@ main:focus {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
-  color: var(--ink);
   font: inherit;
   font-size: 0.92rem;
   text-decoration: none;
   cursor: pointer;
-  white-space: nowrap;
 }
 
 .btn:hover:not(:disabled) {
@@ -551,7 +693,6 @@ main:focus {
 
 .btn-quiet:hover:not(:disabled) {
   border-color: var(--line-strong);
-  color: var(--ink);
 }
 
 .btn-icon {
@@ -590,10 +731,6 @@ main:focus {
   min-width: 0;
 }
 
-.field-label {
-  color: var(--ink-soft);
-}
-
 .field-input,
 .select {
   min-height: 44px;
@@ -602,7 +739,6 @@ main:focus {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
-  color: var(--ink);
   font: inherit;
   font-size: 0.92rem;
 }
@@ -616,7 +752,6 @@ main:focus {
 }
 
 .field-hint {
-  color: var(--ink-soft);
   font-size: 0.85rem;
 }
 
@@ -632,7 +767,6 @@ main:focus {
   gap: var(--space-2);
   margin-bottom: var(--space-5);
   padding: var(--space-4);
-  border: 1px solid var(--line);
   border-left: 4px solid var(--accent);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
@@ -644,7 +778,6 @@ main:focus {
 
 .banner p {
   max-width: 52rem;
-  color: var(--ink-soft);
   font-size: 0.92rem;
 }
 
@@ -655,7 +788,6 @@ main:focus {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
   margin-bottom: var(--space-6);
-  border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--line);
   overflow: hidden;
@@ -669,21 +801,15 @@ main:focus {
   min-width: 0;
 }
 
-.metric-label {
-  color: var(--ink-soft);
-}
-
 .metric-value {
   font-family: var(--serif);
   font-size: 1.5rem;
   line-height: 1.2;
-  overflow-wrap: anywhere;
 }
 
 .metric-note {
   color: var(--ink-faint);
   font-size: 0.82rem;
-  overflow-wrap: anywhere;
 }
 
 /* ---------- Sections ---------- */
@@ -696,7 +822,6 @@ main:focus {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  justify-content: space-between;
   gap: var(--space-2);
   margin-bottom: var(--space-3);
 }
@@ -708,7 +833,6 @@ main:focus {
 }
 
 .section-note {
-  color: var(--ink-soft);
   font-size: 0.88rem;
 }
 
@@ -720,7 +844,6 @@ main:focus {
 }
 
 .account-card {
-  border: 1px solid var(--line);
   border-radius: var(--radius-l);
   background: var(--paper-raised);
   overflow: hidden;
@@ -734,7 +857,6 @@ main:focus {
 .card-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
   gap: var(--space-3);
   padding: var(--space-4);
   border-bottom: 1px solid var(--line);
@@ -742,7 +864,6 @@ main:focus {
 
 .avatar {
   display: grid;
-  place-items: center;
   width: 2.5rem;
   height: 2.5rem;
   flex: none;
@@ -761,14 +882,10 @@ main:focus {
 .account-name {
   font-size: 1.05rem;
   font-weight: 600;
-  overflow-wrap: anywhere;
 }
 
 .account-meta {
-  color: var(--ink-soft);
-  font-family: var(--mono);
   font-size: 0.78rem;
-  overflow-wrap: anywhere;
 }
 
 .badge-row {
@@ -778,12 +895,9 @@ main:focus {
 }
 
 .badge {
-  display: inline-flex;
-  align-items: center;
   gap: var(--space-1);
   padding: 2px var(--space-2);
   border: 1px solid var(--line-strong);
-  border-radius: 999px;
   font-size: 0.78rem;
   font-weight: 600;
   line-height: 1.5;
@@ -815,7 +929,6 @@ main:focus {
 .badge[data-tone="idle"] {
   border-color: var(--line-strong);
   background: var(--paper);
-  color: var(--ink-soft);
 }
 
 .detail-grid {
@@ -836,14 +949,9 @@ main:focus {
 }
 
 .detail-label {
-  color: var(--ink-soft);
   font-size: 0.78rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-}
-
-.detail-value {
-  overflow-wrap: anywhere;
 }
 
 .detail-note {
@@ -861,7 +969,6 @@ main:focus {
 .orb-head {
   display: flex;
   flex-wrap: wrap;
-  justify-content: space-between;
   gap: var(--space-2);
 }
 
@@ -873,7 +980,6 @@ main:focus {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-4);
-  font-family: var(--mono);
   font-size: 0.88rem;
 }
 
@@ -885,9 +991,7 @@ main:focus {
 .progress {
   position: relative;
   height: 0.5rem;
-  border-radius: 999px;
   background: var(--paper);
-  border: 1px solid var(--line);
   overflow: hidden;
 }
 
@@ -906,7 +1010,6 @@ main:focus {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  align-items: center;
   padding: var(--space-3) var(--space-4);
 }
 
@@ -915,7 +1018,6 @@ main:focus {
 }
 
 .static-note {
-  color: var(--ink-soft);
   font-size: 0.85rem;
   padding: var(--space-2) 0;
 }
@@ -924,7 +1026,6 @@ main:focus {
 
 .login-panel {
   margin-top: var(--space-4);
-  border: 1px solid var(--line);
   border-left: 4px solid var(--accent);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
@@ -934,15 +1035,12 @@ main:focus {
 }
 
 .login-link {
-  font-family: var(--mono);
   font-size: 0.82rem;
-  overflow-wrap: anywhere;
 }
 
 /* ---------- Models ---------- */
 
 .model-list {
-  border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
   overflow: hidden;
@@ -973,18 +1071,13 @@ main:focus {
 
 .model-name {
   font-weight: 600;
-  overflow-wrap: anywhere;
 }
 
 .model-slug {
-  color: var(--ink-soft);
-  font-family: var(--mono);
   font-size: 0.8rem;
-  overflow-wrap: anywhere;
 }
 
 .model-desc {
-  color: var(--ink-soft);
   font-size: 0.88rem;
   max-width: 40rem;
 }
@@ -993,20 +1086,16 @@ main:focus {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  align-items: center;
 }
 
 .chip {
   padding: 1px var(--space-2);
-  border: 1px solid var(--line);
   border-radius: var(--radius-s);
   background: var(--paper);
-  font-family: var(--mono);
   font-size: 0.75rem;
 }
 
 .chip-label {
-  color: var(--ink-soft);
   font-size: 0.78rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1018,10 +1107,8 @@ main:focus {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-4);
-  border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
   margin-bottom: var(--space-4);
@@ -1033,7 +1120,6 @@ main:focus {
 }
 
 .check-list {
-  border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
   overflow: hidden;
@@ -1053,12 +1139,10 @@ main:focus {
 
 .check-icon {
   display: grid;
-  place-items: center;
   width: 2rem;
   height: 2rem;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-s);
-  color: var(--ink-soft);
 }
 
 .check-row[data-state="running"] .check-icon {
@@ -1085,9 +1169,7 @@ main:focus {
 }
 
 .check-detail {
-  color: var(--ink-soft);
   font-size: 0.88rem;
-  overflow-wrap: anywhere;
 }
 
 .check-state {
@@ -1095,8 +1177,6 @@ main:focus {
   font-weight: 600;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--ink-soft);
-  white-space: nowrap;
 }
 
 .check-row[data-state="pass"] .check-state {
@@ -1120,7 +1200,6 @@ main:focus {
   display: grid;
   gap: var(--space-1);
   padding: var(--space-4);
-  border: 1px solid var(--line);
   border-top: 3px solid var(--accent);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
@@ -1132,10 +1211,7 @@ main:focus {
 }
 
 .protocol-path {
-  font-family: var(--mono);
   font-size: 0.8rem;
-  color: var(--ink-soft);
-  overflow-wrap: anywhere;
 }
 
 .route-group {
@@ -1149,7 +1225,6 @@ main:focus {
 }
 
 .route-table {
-  border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
   overflow: hidden;
@@ -1168,28 +1243,22 @@ main:focus {
 }
 
 .method {
-  font-family: var(--mono);
   font-size: 0.75rem;
   font-weight: 700;
   letter-spacing: 0.04em;
 }
 
 .route-path {
-  font-family: var(--mono);
   font-size: 0.82rem;
-  overflow-wrap: anywhere;
 }
 
 .route-purpose {
-  color: var(--ink-soft);
   font-size: 0.86rem;
 }
 
 .key-flag {
   font-size: 0.75rem;
   font-weight: 600;
-  color: var(--ink-soft);
-  white-space: nowrap;
 }
 
 .key-flag[data-key="yes"]::before {
@@ -1200,7 +1269,6 @@ main:focus {
 /* ---------- Snippets ---------- */
 
 .snippet {
-  border: 1px solid var(--line);
   border-radius: var(--radius-m);
   background: var(--paper-raised);
   margin-bottom: var(--space-4);
@@ -1210,8 +1278,6 @@ main:focus {
 .snippet-head {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--line);
@@ -1222,7 +1288,6 @@ main:focus {
 }
 
 .snippet-note {
-  color: var(--ink-soft);
   font-size: 0.84rem;
 }
 
@@ -1266,7 +1331,6 @@ main:focus {
 }
 
 .empty-title {
-  color: var(--ink);
   font-weight: 600;
 }
 
@@ -1275,7 +1339,6 @@ main:focus {
   height: 1rem;
   border: 2px solid var(--line-strong);
   border-top-color: var(--accent);
-  border-radius: 50%;
   animation: spin 900ms linear infinite;
 }
 
@@ -1294,14 +1357,12 @@ main:focus {
 }
 
 .visually-hidden {
-  position: absolute;
   width: 1px;
   height: 1px;
   padding: 0;
   margin: -1px;
   overflow: hidden;
   clip: rect(0 0 0 0);
-  white-space: nowrap;
   border: 0;
 }
 
@@ -1313,7 +1374,6 @@ main:focus {
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-l);
   background: var(--paper-raised);
-  color: var(--ink);
   box-shadow: var(--shadow-dialog);
 }
 
@@ -1335,7 +1395,6 @@ main:focus {
 }
 
 .dialog-text {
-  color: var(--ink-soft);
   font-size: 0.92rem;
 }
 
@@ -1352,7 +1411,6 @@ main:focus {
 }
 
 .dialog-close {
-  position: absolute;
   top: var(--space-3);
   right: var(--space-3);
 }
