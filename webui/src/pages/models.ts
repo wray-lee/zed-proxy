@@ -141,8 +141,8 @@ async function doRefresh(): Promise<void> {
   } else if (result.retryAfterS > 0) {
     toast(tf('refreshThrottled', lang, result.retryAfterS), 'warn')
   } else {
-    // The reread list is authoritative; the response count can omit aliases.
-    await reloadCatalogue()
+    // No account: the built-in catalogue came from the list reread, so its
+    // length is the reread count. The POST's count can omit the alias.
     toast(tf('refreshBuiltinCount', lang, view.catalogue.models.length), 'warn')
   }
   render()
