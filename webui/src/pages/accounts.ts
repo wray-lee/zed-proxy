@@ -36,6 +36,8 @@ interface LoginState {
   message: string | null
   detail: string | null
   draft: string
+  /** Inline error under the paste field; null when there is none. */
+  error: string | null
 }
 
 const login: LoginState = {
@@ -46,6 +48,7 @@ const login: LoginState = {
   message: null,
   detail: null,
   draft: '',
+  error: null,
 }
 
 // ---- Local UI state ---------------------------------------------------------
@@ -599,14 +602,19 @@ async function doRefreshBalance(): Promise<void> {
   const result = await refreshAllBalances()
   if (isFailure(result)) {
     toast(`${tr('balanceFailed', lang)} ${describe(result, lang)}`, 'bad')
-  } else if (result.updated === 0 && result.failed === 0 && result.retryAfterS > 0) {
-    toast(tf('balanceWait', lang, result.retryAfterS), 'warn')
-  } else if (result.updated === 0 && result.failed === 0) {
-    toast(tr('balanceNone', lang), 'warn')
-  } else if (result.failed > 0) {
-    toast(tf('balancePartial', lang, result.updated, result.failed, orbErrorCopy(result.firstError, lang)), 'warn')
   } else {
-    toast(tf('balanceUpdated', lang, result.updated), 'ok')
+    // Throttling can arrive together with cached successes: report both facts.
+    const wait = result.retryAfterS > 0 ? ` ${tf('balanceWait', lang, result.retryAfterS)}` : ''
+    if (result.failed > 0) {
+      toast(`${tf('balancePartial', lang, result.updated, result.failed, orbErrorCopy(result.firstError, lang))}${wait}`, 'warn')
+    } else if (result.retryAfterS > 0) {
+      const head = result.updated > 0 ? `${tf('balanceUpdated', lang, result.updated)} ` : ''
+      toast(`${head}${tf('balanceWait', lang, result.retryAfterS)}`, 'warn')
+    } else if (result.updated === 0) {
+      toast(tr('balanceNone', lang), 'warn')
+    } else {
+      toast(tf('balanceUpdated', lang, result.updated), 'ok')
+    }
   }
   render()
 }
@@ -617,6 +625,7 @@ async function startLoginFlow(): Promise<void> {
   login.phase = 'starting'
   login.message = null
   login.detail = null
+  login.error = null
   render()
   const result = await beginLogin()
   if (isFailure(result)) {
@@ -637,18 +646,15 @@ async function submitLogin(): Promise<void> {
   const lang = state.lang
   const input = document.getElementById('login-url-input')
   const value = (input instanceof HTMLInputElement ? input.value : login.draft).trim()
-  const error = document.getElementById('login-url-error')
   if (value === '') {
-    if (error) {
-      error.textContent = tr('loginNeedUrl', lang)
-      error.hidden = false
-    }
-    if (input instanceof HTMLInputElement) input.focus()
+    login.error = tr('loginNeedUrl', lang)
+    render()
+    document.getElementById('login-url-input')?.focus()
     return
   }
   login.draft = value
   login.phase = 'submitting'
-  if (error) error.hidden = true
+  login.error = null
   render()
   const field = document.getElementById('login-url-input')
   if (field instanceof HTMLInputElement) field.value = value
@@ -657,14 +663,25 @@ async function submitLogin(): Promise<void> {
     login.open = false
     login.phase = 'idle'
     login.draft = ''
+    login.error = null
     toast(tf('loginSuccess', lang, name ?? ''), 'ok')
     await Promise.all([reloadAccounts(), reloadStatus()])
   } catch (err) {
     login.phase = 'waiting'
+    // Server wording stays in the browser console; the field gets a fixed,
+    // actionable line so no raw status text or code reaches the page.
     const failure = failureFrom(err)
-    toast(`${tr('loginFailed', lang)} ${describe(failure, lang)}`, 'bad')
+    console.error('[console] login complete failed', failure)
+    login.error =
+      failure.kind === 'network'
+        ? tr('errorNetwork', lang)
+        : failure.status === 401
+          ? tr('errorUnauthorized', lang)
+          : tr('loginCallbackInvalid', lang)
+    toast(tr('loginFailed', lang), 'bad')
   }
   render()
+  if (login.error !== null) document.getElementById('login-url-input')?.focus()
 }
 
 // ---- Page -------------------------------------------------------------------
@@ -733,7 +750,11 @@ function loginPanel(): HTMLElement | null {
             }
           },
         }),
-        h('p', { class: 'field-error', id: 'login-url-error', hidden: true }),
+        h(
+          'p',
+          { class: 'field-error', id: 'login-url-error', role: 'alert', hidden: login.error === null },
+          login.error ?? '',
+        ),
       ),
     )
     children.push(
@@ -759,6 +780,7 @@ function loginPanel(): HTMLElement | null {
             onclick: () => {
               login.open = false
               login.phase = 'idle'
+              login.error = null
               render()
             },
           },

@@ -112,6 +112,7 @@ export const dict = {
   loginSubmitting: ['正在完成登录', 'Finishing login'],
   loginSuccess: ['已添加账号 {0}。', 'Added account {0}.'],
   loginNeedUrl: ['请先粘贴回调网址。', 'Paste the callback URL first.'],
+  loginCallbackInvalid: ['这段回调网址无法使用。请回到 Zed 重新完成授权，再复制地址栏里的完整网址。', 'That callback URL was not accepted. Finish the sign-in in Zed again, then copy the full address from the browser bar.'],
   loginDetail: ['服务端说明：{0}', 'Service detail: {0}'],
   loginDismiss: ['收起', 'Dismiss'],
 
