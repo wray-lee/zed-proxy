@@ -675,9 +675,9 @@ export function loginErrorCopy(failure: Failure, lang: Lang): string {
     case 400: {
       const detail = failure.detail ?? ''
       if (/too long/i.test(detail)) return tr('loginCallbackTooLong', lang)
-      if (/decrypt|access token/i.test(detail)) return tr('loginDecryptFailed', lang)
       if (/valid JSON/i.test(detail)) return tr('loginCredentialInvalid', lang)
-      if (/user_id|access_token/i.test(detail)) return tr('loginCallbackMissing', lang)
+      if (/decrypt/i.test(detail)) return tr('loginDecryptFailed', lang)
+      if (/missing (user_id|access_token)/i.test(detail)) return tr('loginCallbackMissing', lang)
       return tr('loginCallbackInvalid', lang)
     }
     default:

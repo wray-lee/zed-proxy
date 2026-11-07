@@ -4,6 +4,7 @@
 import { applyStatusPatch, emptyStatusRow, parseProbe } from './data.ts'
 import { billingNoteCopy, withAccountName } from './format.ts'
 import { dict } from './text.ts'
+import { loginErrorCopy } from './pages/accounts.ts'
 
 let failures = 0
 
@@ -56,6 +57,25 @@ const retired: [string, string][] = [
 for (const [zh, en] of retired) {
   const hit = Object.entries(dict).filter(([, pair]) => pair[0] === zh || pair[1] === en)
   check(`retired pair gone: ${zh}/${en}`, hit.length === 0, hit.map(([key]) => key))
+}
+
+// 5. A login 400 picks the right line: the JSON verdict wins over the decrypt wording.
+const cases: [string, string][] = [
+  ['invalid callback url: too long', 'loginCallbackTooLong'],
+  ['decrypted credential is not valid JSON', 'loginCredentialInvalid'],
+  ['failed to decrypt access token (wrong key or corrupted link)', 'loginDecryptFailed'],
+  ['invalid callback url: missing user_id', 'loginCallbackMissing'],
+  ['invalid callback url: no user_id/access_token query', 'loginCallbackInvalid'],
+]
+for (const [detail, key] of cases) {
+  const line = loginErrorCopy({ kind: 'status', status: 400, message: 'HTTP 400', detail }, 'en')
+  check(`login 400 ${detail}`, line === dict[key as keyof typeof dict][1], line)
+}
+check('login 409 names no pending login', loginErrorCopy({ kind: 'status', status: 409, message: 'HTTP 409', detail: null }, 'en') === dict.loginNoPending[1])
+check('login 410 names the expiry', loginErrorCopy({ kind: 'status', status: 410, message: 'HTTP 410', detail: null }, 'en') === dict.errorLoginExpired[1])
+for (const [detail, key] of cases) {
+  const line = loginErrorCopy({ kind: 'status', status: 400, message: 'HTTP 400', detail }, 'zh')
+  check(`login 400 zh ${detail}`, line === dict[key as keyof typeof dict][0], line)
 }
 
 if (failures > 0) throw new Error(`${failures} self-checks failed`)
