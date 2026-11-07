@@ -27,7 +27,8 @@
   --bad: #9c2a1d;
   --bad-wash: #f6e0da;
   --line: #d8d2c4;
-  --line-strong: #b7b0a0;
+  /* Control and container boundaries; 3.4:1 or better on both paper and card. */
+  --line-strong: #8a8375;
   --radius-s: 4px;
   --radius-m: 8px;
   --radius-l: 12px;
@@ -179,7 +180,7 @@ pre,
   font-family: var(--mono);
 }
 
-/* Hairline frame around blocks and containers */
+/* Frame around blocks and containers; the card boundary must clear 3:1. */
 .boot-note,
 .banner,
 .metrics,
@@ -193,7 +194,7 @@ pre,
 .protocol,
 .route-table,
 .snippet {
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
 }
 
 /* Long identifiers and paths wrap instead of overflowing */
@@ -927,7 +928,7 @@ main:focus {
 }
 
 .badge[data-tone="idle"] {
-  border-color: var(--line-strong);
+  border-color: var(--ink-faint);
   background: var(--paper);
 }
 
