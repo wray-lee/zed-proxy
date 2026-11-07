@@ -81,7 +81,7 @@ export interface QuotaInput {
   used: number | null
   limit: number | null
   remaining: number | null
-  usageBased: boolean
+  usageBased: boolean | null
 }
 
 export function quotaView(input: QuotaInput, lang: Lang): QuotaView {
@@ -138,6 +138,14 @@ export function probeView(modelState: string | null, lang: Lang): ProbeView {
     default:
       return { tone: 'idle', label: tr('probeUnchecked', lang) }
   }
+}
+
+/** Only a true flag is announced; an absent or false flag stays silent. */
+export function billingNoteCopy(overdue: boolean | null, accountTooYoung: boolean | null, lang: Lang): string | null {
+  const parts: string[] = []
+  if (overdue === true) parts.push(tr('billingOverdue', lang))
+  if (accountTooYoung === true) parts.push(tr('accountTooYoung', lang))
+  return parts.length === 0 ? null : parts.join(' ')
 }
 
 export function orbErrorCopy(code: string | null, lang: Lang): string {

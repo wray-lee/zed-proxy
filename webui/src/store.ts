@@ -5,6 +5,7 @@ import { ApiError } from './api.ts'
 import type { Failure } from './api.ts'
 import { failureFrom } from './api.ts'
 import {
+  applyStatusPatch,
   fetchAccounts,
   fetchStatus,
   loadCatalogue,
@@ -236,18 +237,16 @@ export async function probeAccount(account: string | null): Promise<ProbeOutcome
   try {
     const result = await runProbe(account, model)
     let passed = 0
-    for (const row of result.rows) {
-      if (row.modelState === 'healthy') passed += 1
-      const existing = view.status.rows[row.name]
-      view.status.rows[row.name] = existing
-        ? { ...existing, ...row }
-        : row
+    for (const patch of result.patches) {
+      if (patch.modelState === 'healthy') passed += 1
+      // A probe carries only probe fields; applyStatusPatch keeps the rest.
+      view.status.rows[patch.name] = applyStatusPatch(view.status.rows[patch.name], patch)
     }
     if (result.checkedAt !== null) view.status.checkedAt = result.checkedAt
     update(() => {
       view.probe = { report: result.report, checkedAt: result.checkedAt, model }
     })
-    return { passed, total: result.rows.length, report: result.report, model }
+    return { passed, total: result.patches.length, report: result.report, model }
   } catch (err) {
     console.error('[console] probe failed', err)
     return failureFrom(err)

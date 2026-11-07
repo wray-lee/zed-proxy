@@ -121,6 +121,8 @@ export const dict = {
   planLabel: ['套餐', 'Plan'],
   planUnknown: ['套餐未披露', 'Plan not disclosed'],
   planBillingUnread: ['账单信息暂不可得', 'Billing details unavailable'],
+  billingOverdue: ['Zed 标记账单逾期，请到账单页核对。', 'Zed flags an overdue bill; check the billing page.'],
+  accountTooYoung: ['Zed 标记账号过新，账单数据可能不完整。', 'Zed marks this account as too new, so billing data may be incomplete.'],
   periodEnd: ['订阅周期结束', 'Billing period ends'],
   quotaLabel: ['额度', 'Quota'],
   quotaUsed: ['已用 {0} / {1}', 'Used {0} of {1}'],

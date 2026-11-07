@@ -5,7 +5,7 @@ import { h, clear, pageRoot } from '../dom.ts'
 import { describe, failureFrom } from '../api.ts'
 import { completeLogin } from '../data.ts'
 import type { AccountRow, StatusRow } from '../data.ts'
-import { dateOnly, dateTime, fraction, money, planName, probeView, quotaView, orbErrorCopy } from '../format.ts'
+import { billingNoteCopy, dateOnly, dateTime, fraction, money, planName, probeView, quotaView, orbErrorCopy } from '../format.ts'
 import { confirmDialog } from '../dialog.ts'
 import { state } from '../state.ts'
 import { tf, tr } from '../text.ts'
@@ -89,7 +89,7 @@ function probeCounts(): { healthy: number; total: number } | null {
 
 function cooldownCount(): number {
   let count = 0
-  for (const row of Object.values(view.status.rows)) if (row.cooldownS > 0) count += 1
+  for (const row of Object.values(view.status.rows)) if ((row.cooldownS ?? 0) > 0) count += 1
   for (const row of view.accounts.rows) if (!mergedStatus(row) && row.cooldownS > 0) count += 1
   return count
 }
@@ -477,7 +477,7 @@ function accountCard(row: AccountRow): HTMLElement {
       'div',
       { class: 'detail-grid' },
       detail(tr('planLabel', lang), plan ?? tr('planUnknown', lang), status?.billingOk === false ? tr('planBillingUnread', lang) : null),
-      detail(tr('periodEnd', lang), ends, null),
+      detail(tr('periodEnd', lang), ends, billingNoteCopy(status?.overdue ?? null, status?.accountTooYoung ?? null, lang)),
       detail(
         tr('quotaLabel', lang),
         quotaText?.detail === '' ? quotaText.label : (quotaText?.detail ?? null),

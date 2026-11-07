@@ -44,14 +44,25 @@ export interface StatusRow {
   used: number | null
   limit: number | null
   remaining: number | null
-  usageBased: boolean
+  usageBased: boolean | null
+  /** Billing flags; null means the response did not carry the flag. */
+  overdue: boolean | null
+  accountTooYoung: boolean | null
   subscriptionEndsAt: string | null
-  orbConfigured: boolean
+  orbConfigured: boolean | null
   credit: Credit | null
   modelState: string | null
   modelCheckedAt: number | null
   modelLatencyMs: number | null
-  cooldownS: number
+  cooldownS: number | null
+}
+
+/** The fields one response entry actually carried; absent ones are omitted. */
+export type StatusPatch = { name: string } & Partial<Omit<StatusRow, 'name'>>
+
+/** Overlays only the fields the patch carried, so a probe keeps credit and flags. */
+export function applyStatusPatch(existing: StatusRow | undefined, patch: StatusPatch): StatusRow {
+  return existing ? { ...existing, ...patch } : { ...emptyStatusRow(patch.name), ...patch }
 }
 
 export interface Credit {
@@ -77,7 +88,7 @@ export interface ProbeReport {
 
 export interface ProbeResult {
   report: ProbeReport
-  rows: StatusRow[]
+  patches: StatusPatch[]
   checkedAt: number | null
 }
 
@@ -199,38 +210,69 @@ function parseCredit(raw: unknown): Credit | null {
   }
 }
 
-function parseStatusRow(entry: unknown): StatusRow | null {
+export function emptyStatusRow(name: string): StatusRow {
+  return {
+    name,
+    checkedAt: null,
+    quotaState: null,
+    tokenOk: null,
+    checkOk: null,
+    billingOk: null,
+    plan: null,
+    used: null,
+    limit: null,
+    remaining: null,
+    usageBased: null,
+    overdue: null,
+    accountTooYoung: null,
+    subscriptionEndsAt: null,
+    orbConfigured: null,
+    credit: null,
+    modelState: null,
+    modelCheckedAt: null,
+    modelLatencyMs: null,
+    cooldownS: null,
+  }
+}
+
+function boolOrNull(value: unknown): boolean | null {
+  return typeof value === 'boolean' ? value : null
+}
+
+/** Only the keys the entry carries; a probe response has far fewer than a status entry. */
+function parseStatusPatch(entry: unknown): StatusPatch | null {
   if (!isRecord(entry)) return null
   const name = str(entry.name)
   if (!name) return null
-  return {
-    name,
-    checkedAt: num(entry.checked_at),
-    quotaState: str(entry.quota_state),
-    tokenOk: typeof entry.token_ok === 'boolean' ? entry.token_ok : null,
-    checkOk: typeof entry.check_ok === 'boolean' ? entry.check_ok : null,
-    billingOk: typeof entry.billing_ok === 'boolean' ? entry.billing_ok : null,
-    plan: str(entry.plan),
-    used: num(entry.used),
-    limit: num(entry.limit),
-    remaining: num(entry.remaining),
-    usageBased: bool(entry.usage_based_billing),
-    subscriptionEndsAt: str(entry.subscription_ends_at),
-    orbConfigured: bool(entry.orb_configured),
-    credit: parseCredit(entry.credit),
-    modelState: str(entry.model_state),
-    modelCheckedAt: num(entry.model_checked_at),
-    modelLatencyMs: num(entry.model_latency_ms),
-    cooldownS: num(entry.cooldown_s) ?? 0,
-  }
+  const patch: StatusPatch = { name }
+  if ('checked_at' in entry) patch.checkedAt = num(entry.checked_at)
+  if ('quota_state' in entry) patch.quotaState = str(entry.quota_state)
+  if ('token_ok' in entry) patch.tokenOk = boolOrNull(entry.token_ok)
+  if ('check_ok' in entry) patch.checkOk = boolOrNull(entry.check_ok)
+  if ('billing_ok' in entry) patch.billingOk = boolOrNull(entry.billing_ok)
+  if ('plan' in entry) patch.plan = str(entry.plan)
+  if ('used' in entry) patch.used = num(entry.used)
+  if ('limit' in entry) patch.limit = num(entry.limit)
+  if ('remaining' in entry) patch.remaining = num(entry.remaining)
+  if ('usage_based_billing' in entry) patch.usageBased = boolOrNull(entry.usage_based_billing)
+  if ('overdue' in entry) patch.overdue = boolOrNull(entry.overdue)
+  if ('account_too_young' in entry) patch.accountTooYoung = boolOrNull(entry.account_too_young)
+  if ('subscription_ends_at' in entry) patch.subscriptionEndsAt = str(entry.subscription_ends_at)
+  if ('orb_configured' in entry) patch.orbConfigured = boolOrNull(entry.orb_configured)
+  if ('credit' in entry) patch.credit = parseCredit(entry.credit)
+  if ('model_state' in entry) patch.modelState = str(entry.model_state)
+  if ('model_checked_at' in entry) patch.modelCheckedAt = num(entry.model_checked_at)
+  if ('model_latency_ms' in entry) patch.modelLatencyMs = num(entry.model_latency_ms)
+  if ('cooldown_s' in entry) patch.cooldownS = num(entry.cooldown_s)
+  return patch
 }
 
 export function parseStatus(payload: unknown): StatusView {
   const record = isRecord(payload) ? payload : {}
   const rows: StatusRow[] = []
   for (const entry of arr(record.accounts)) {
-    const row = parseStatusRow(entry)
-    if (row) rows.push(row)
+    const patch = parseStatusPatch(entry)
+    if (patch) rows.push({ ...emptyStatusRow(patch.name), ...patch })
   }
   return { checkedAt: num(record.checked_at), rows }
 }
@@ -238,10 +280,10 @@ export function parseStatus(payload: unknown): StatusView {
 export function parseProbe(payload: unknown): ProbeResult {
   const record = isRecord(payload) ? payload : {}
   const probe = isRecord(record.probe) ? record.probe : {}
-  const rows: StatusRow[] = []
+  const patches: StatusPatch[] = []
   for (const entry of arr(record.accounts)) {
-    const row = parseStatusRow(entry)
-    if (row) rows.push(row)
+    const patch = parseStatusPatch(entry)
+    if (patch) patches.push(patch)
   }
   return {
     report: {
@@ -249,7 +291,7 @@ export function parseProbe(payload: unknown): ProbeResult {
       effort: str(probe.reasoning_effort),
       maxOutputTokens: num(probe.max_output_tokens),
     },
-    rows,
+    patches,
     checkedAt: num(record.checked_at),
   }
 }
