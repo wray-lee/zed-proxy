@@ -37,6 +37,27 @@ function levelChips(row: ModelRow): HTMLElement {
 function modelRow(row: ModelRow): HTMLElement {
   const lang = state.lang
   const selected = row.slug === state.probeModel
+  if (row.upstreamOnly) {
+    // Upstream-only entries have no catalogue entry, so they stay read-only.
+    return h(
+      'li',
+      { class: 'model-row', 'data-selected': 'false', 'data-readonly': 'true' },
+      h(
+        'div',
+        { class: 'model-main' },
+        h('p', { class: 'model-name' }, row.displayName),
+        h('p', { class: 'model-slug' }, row.slug),
+        h(
+          'div',
+          { class: 'chip-row' },
+          h('span', { class: 'chip' }, tr('upstreamOnly', lang)),
+          h('span', { class: 'chip-label' }, tr('provider', lang)),
+          h('span', { class: 'chip' }, providerName(row.ownedBy) ?? tr('unknown', lang)),
+        ),
+        h('p', { class: 'model-desc' }, tr('upstreamOnlyNote', lang)),
+      ),
+    )
+  }
   return h(
     'li',
     { class: 'model-row', 'data-selected': String(selected) },
@@ -120,7 +141,9 @@ async function doRefresh(): Promise<void> {
   } else if (result.retryAfterS > 0) {
     toast(tf('refreshThrottled', lang, result.retryAfterS), 'warn')
   } else {
-    toast(tf('refreshBuiltin', lang, result.count ?? view.catalogue.models.length), 'warn')
+    // The reread list is authoritative; the response count can omit aliases.
+    await reloadCatalogue()
+    toast(tf('refreshBuiltinCount', lang, view.catalogue.models.length), 'warn')
   }
   render()
 }

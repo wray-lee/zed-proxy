@@ -104,6 +104,18 @@ async function copySnippet(text: string): Promise<void> {
   }
 }
 
+/** Ctrl/Cmd+A inside a focused snippet selects the block, not the whole page. */
+function selectBlock(pre: HTMLElement, event: KeyboardEvent): void {
+  if (!(event.ctrlKey || event.metaKey) || event.key !== 'a' || event.altKey) return
+  const selection = window.getSelection()
+  if (!selection) return
+  event.preventDefault()
+  const range = document.createRange()
+  range.selectNodeContents(pre)
+  selection.removeAllRanges()
+  selection.addRange(range)
+}
+
 function snippetBlock(spec: SnippetSpec): HTMLElement {
   const lang = state.lang
   const body = spec.body()
@@ -124,7 +136,9 @@ function snippetBlock(spec: SnippetSpec): HTMLElement {
         tr('copy', lang),
       ),
     ),
-    h('pre', { tabindex: '0' }, h('code', {}, body)),
+    h('pre', { tabindex: '0', onkeydown: (event: Event) => {
+      if (event instanceof KeyboardEvent) selectBlock(event.currentTarget as HTMLElement, event)
+    } }, h('code', {}, body)),
   )
 }
 

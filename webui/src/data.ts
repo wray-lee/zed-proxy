@@ -13,6 +13,8 @@ export interface ModelRow {
   levels: string[]
   contextLength: number | null
   maxOutputTokens: number | null
+  /** True for a row that came only from `data[]`, with no catalogue entry. */
+  upstreamOnly: boolean
 }
 
 export interface Catalogue {
@@ -135,6 +137,7 @@ function parseModel(entry: unknown, ownedBy: string | null, contextLength: numbe
     levels,
     contextLength,
     maxOutputTokens: maxOut,
+    upstreamOnly: false,
   }
 }
 
@@ -171,6 +174,7 @@ export function parseCatalogue(payload: unknown): Catalogue {
       levels: [],
       contextLength: extra.context,
       maxOutputTokens: extra.maxOut,
+      upstreamOnly: true,
     })
   }
   return { models }
