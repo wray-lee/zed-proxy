@@ -35,7 +35,7 @@ Each page render is wrapped in its own guard. When one page throws, that page sh
 
 **Colour (two core colours plus one accent).** Paper `#f7f4ec` and ink `#1d1c19` carry every background and text level. The accent is terracotta `#9c3a1a`, and it is the only colour that marks attention: a primary action (probe all, add account, save an Orb link, finish a login, refresh the catalogue, run the checks), the left edge of banners and of the active account, the selected model row, the login panel edge, the top rule of each protocol strip, the balance fill, the avatar wash, the diamond in front of a key-required route, the focus ring and the spinner arc. Links use the darker variant `#7f2d12` so body-sized link text clears 4.5:1 on paper. The page is almost entirely text and hairlines, so one signal colour is enough; spreading it further would stop marking a primary action. Green, amber and red exist only as functional status colours on tags and notices; they are never decoration.
 
-**Contrast.** Body ink on paper is about 15.5:1; secondary text `#59554c` about 6.7:1; the accent as text about 6.3:1; light text on the dark rail about 15:1 and secondary rail text about 9.7:1. All clear WCAG AA 4.5:1, with room above the 3:1 floor for large text and focus rings. Disabled text is lighter but still legible.
+**Contrast.** Body ink on paper is about 15.5:1; secondary text `#59554c` about 6.7:1; the accent as text about 6.3:1; light text on the dark rail about 15:1 and secondary rail text about 9.7:1. All clear WCAG AA 4.5:1, with room above the 3:1 floor for large text and focus rings. Control and container boundaries use `#8a8375`, 3.4:1 or better on both paper and card, so inputs, selects, secondary buttons and card edges stay visible without the accent competing.
 
 **Type and hierarchy.** Headings use a serif stack (Iowan Old Style / Palatino / Georgia / Noto Serif), body text the system sans stack, and machine values (model ids, paths, amounts, times, storage keys) a monospace stack. Each stack has one job. Hierarchy comes from size, weight and space, not shadow. Serif appears at page and section level, on the four metric values and on the dialog title; card titles, row labels and every control return to sans so the whole page does not read as a masthead. Small labels and column heads are uppercase and letter-spaced at 0.72 to 0.78 rem; that is the one repeated typographic device, and it is what makes a ruled list still scan as a table.
 
@@ -57,13 +57,13 @@ Each page render is wrapped in its own guard. When one page throws, that page sh
 
 | Page | Hash | Contents |
 | --- | --- | --- |
-| Accounts | `#accounts` | Four header controls (probe model, refresh account status, refresh Orb balance, probe all), a cost banner, four metrics, the account list, add-account and the login panel |
-| Model catalogue | `#models` | Catalogue refresh, an explainer banner, model rows (display name, id, provider, description, default and supported levels, context length, use-for-probe) |
+| Accounts | `#accounts` | Four header controls (probe model, refresh account status, refresh Orb balance, probe all), a cost banner, four metrics, the account list, add-account and the login panel; accounts are added through the paste login and switched between, never deleted or renamed, because the backend has no such endpoints |
+| Model list | `#models` | Catalogue refresh, an explainer banner, model rows (display name, id, provider, description, default and supported levels, context length, use-for-probe); entries that only the upstream `data[]` list carries come in as read-only rows marked "Upstream list only" |
 | Diagnostics | `#health` | Six read-only checks in a fixed order, per-row state, a summary with finish time, run again |
 | Routes | `#endpoints` | Three protocol entries and six static route groups (page and liveness, models and protocols, compatibility, accounts and quota, catalogue and identity, login), each row with method and whether a gateway key is needed; the page sends no requests |
 | Clients | `#integration` | Base-address notes and four copy-ready snippets (Codex, Claude Code, OpenCode, a shell request) |
 
-The first three navigation entries form "Runtime", the last two "Development". The current page is marked with `aria-current="page"` and an underline, not colour alone.
+The first three navigation entries form "Runtime", the last two "Developer tools". The current page is marked with `aria-current="page"` and an underline, not colour alone.
 
 ## Language and storage
 
@@ -79,11 +79,13 @@ Protected requests carry `Authorization: Bearer <key>`; an empty key means no he
 
 Every data view fails as "what happened, a plain reason, retry". Reasons map from status codes: 400 request rejected, 401 gateway key, 403 refused, 404 account missing, 409 login running, 410 login expired, 413 too large, 429 too many requests, 5xx and network failures as service or upstream temporarily failing. Raw JSON, stacks, request headers and internal addresses never reach the interface; short machine codes (underscore identifiers) go to the browser console only.
 
-Views that keep earlier values say so: "Showing data from an earlier successful load (time)". A failed write leaves its button usable so it can be retried.
+Views that keep earlier values say so: "Showing data from an earlier successful load (time)". A failed write leaves its button usable so it can be retried. When a write gets no answer at all, the toast says the result is unknown and points at "Refresh account status", which is the only way to learn whether the backend applied it.
+
+Login failures get one line per status class: 409 means no callback is waiting, 410 means the attempt expired, 500 means the account did not save, and 400 names the callback problem (too long, missing user id or access token, not a callback, decryption failed, credential not JSON) without echoing the pasted URL. A rejected Orb link keeps the input and spells out the accepted shape: https, the exact `portal.withorb.com` host, and a non-empty token parameter. The account card shows the cooldown countdown next to the probe result, and the probe budget starts from the catalogue estimate and switches to the limit the probe response reports once a probe has run.
 
 ## Client snippets
 
-Snippets are built from runtime values: the base address comes from the page's protocol, host and port (falling back to 8001 when there is no port); the example model is the selected probe model when the catalogue lists it, otherwise the first entry, and `<model-id>` with a "replace it" note when no catalogue arrived. The effort example is `xhigh`, with a pointer to `/v1/models` for the available levels. Keys are always placeholders and are never read from storage. Each snippet is a focusable monospace block, so it can be selected and copied by keyboard when the clipboard is blocked.
+Snippets are built from runtime values: the base address comes from the page's protocol, host and port (falling back to 8001 when there is no port); the example model is the selected probe model when the catalogue lists it, otherwise the first entry, and `<model-id>` with a "replace it" note when no catalogue arrived. The effort example is `xhigh`, with a pointer to `/v1/models` for the available levels. Keys are always placeholders and are never read from storage. Each snippet is a focusable monospace block, so it can be selected and copied by keyboard when the clipboard is blocked; Ctrl/Cmd+A inside a focused block selects that snippet only, not the whole page.
 
 ## Build and compatibility
 

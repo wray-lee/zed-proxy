@@ -39,9 +39,9 @@ This is the 0.3.0 Rust implementation. It runs as a single static binary: HTTP, 
 - Gemini support: client `reasoning_effort` maps to Gemini `thinkingLevel`, upstream parts marked `thought: true` are split into thinking output instead of visible text, tool schemas are cleaned to the Gemini subset, and tool calls round-trip in both directions.
 - Account pool with cooldowns and failover. Auth errors, rate limits, and repeated transient upstream errors bench an account for a period, and the next request is attempted on another account.
 - Request-level failures (upstream `400`/`404`/`413`/`415`/`422`, including `status.failed` wrappers) are returned as `400` with the upstream message and are never retried, cooled down, or failed over.
-- Gateway panel served at `/`, in English and Chinese, with five pages: accounts, model catalogue, diagnostics, routes and clients.
+- Gateway panel served at `/`, in English and Chinese, with five pages: accounts, model list, diagnostics, routes and clients.
 - Credit balance display: attach an Orb portal link to an account and see used and remaining credit, the reset date and a usage bar on the accounts page, with a "Refresh Orb balance" action.
-- Model catalogue page that lists every model's reasoning levels and context length, with a "Refresh catalogue" action that pulls from Zed on demand.
+- Model list page that lists every model's reasoning levels and context length, with a "Refresh catalogue" action that pulls from Zed on demand.
 - Selectable probe model: probe every account with any model from the catalogue, and the accounts page remembers the choice.
 - Gateway API key authentication with a fail-closed bind rule: a non-loopback bind without any configured key refuses to start.
 - Prebuilt multi-arch image on GHCR, plus compose files for the prebuilt image and for building from source.
@@ -54,7 +54,7 @@ This is the 0.3.0 Rust implementation. It runs as a single static binary: HTTP, 
 The gateway panel at `/` is served by the gateway itself. The dark side rail carries the service state (running, model count, address), the five-entry navigation and two short notes; the page area shows one of five pages:
 
 - **Accounts**: the account list in scheduling order, with subscription plan, quota usage, Orb balance and the latest probe for each account. A probe model selector and three buttons sit above the list: "Refresh account status" re-reads tokens and subscription plans without calling a model, "Refresh Orb balance" re-reads Orb only, and "Probe all accounts" sends one short request per account. A banner under the page header says which model and how many output tokens a probe uses.
-- **Model catalogue**: the forwarded catalogue with each model's provider, default and supported reasoning levels, and context length. "Refresh catalogue" pulls it from Zed on demand; "Use for probes" picks the model the accounts page probes with.
+- **Model list**: the forwarded catalogue with each model's provider, default and supported reasoning levels, and context length. "Refresh catalogue" pulls it from Zed on demand; "Use for probes" picks the model the accounts page probes with.
 - **Diagnostics**: six read-only checks in a fixed order (service, accounts configured, token validity, and the three protocol routes), run once when the panel loads, with a pass/fail state and a finish time.
 - **Routes**: the three client protocols, then every route the gateway serves in six static groups, each row with the method and whether a gateway key is needed. The page sends no requests.
 - **Clients**: base-address notes and four copy-ready snippets (Codex, Claude Code, OpenCode, a shell request), built from the address you are reading the page on, with a placeholder key and a model from the catalogue.
