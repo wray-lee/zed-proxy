@@ -24,10 +24,10 @@ function levelChips(row: ModelRow): HTMLElement {
     'div',
     { class: 'chip-row' },
     h('span', { class: 'chip-label' }, tr('defaultEffort', lang)),
-    h('span', { class: 'chip' }, row.defaultEffort ?? '—'),
+    h('span', { class: 'chip' }, row.defaultEffort ?? tr('unknown', lang)),
     h('span', { class: 'chip-label' }, tr('levels', lang)),
     ...(row.levels.length === 0
-      ? [h('span', { class: 'chip' }, '—')]
+      ? [h('span', { class: 'chip' }, tr('unknown', lang))]
       : row.levels.map((level) => h('span', { class: 'chip' }, level))),
     h('span', { class: 'chip-label' }, tr('provider', lang)),
     h('span', { class: 'chip' }, providerName(row.ownedBy) ?? tr('unknown', lang)),

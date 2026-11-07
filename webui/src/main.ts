@@ -24,7 +24,7 @@ import { attachModelsPage } from './pages/models.ts'
 import { attachHealthPage } from './pages/health.ts'
 import { attachRoutesPage } from './pages/routes.ts'
 import { attachClientsPage } from './pages/clients.ts'
-import { onChange, reloadAccounts, view } from './store.ts'
+import { onChange, view } from './store.ts'
 
 interface PageModule {
   render(): void
@@ -102,7 +102,7 @@ function drawPageFault(host: HTMLElement, page: PageId, lang: 'zh' | 'en'): void
     h(
       'div',
       { class: 'errorbox', role: 'alert' },
-      h('h1', { class: 'error-title' }, tr('pageBrokenTitle', lang)),
+      h('h1', { class: 'error-title', id: `${page}-title` }, tr('pageBrokenTitle', lang)),
       h('p', {}, tr('pageBrokenBody', lang)),
       h('p', { class: 'detail-note' }, tr('pageBrokenDetail', lang)),
       h(
@@ -383,10 +383,7 @@ function start(): void {
     toast(tr('errorUnknown', state.lang), 'bad')
   })
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-      void refreshOverview()
-      void reloadAccounts()
-    }
+    if (document.visibilityState === 'visible') void refreshOverview()
   })
   renderNavBadge()
   subscribe(renderChrome)

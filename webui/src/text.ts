@@ -47,6 +47,7 @@ export const dict = {
   notDisclosed: ['未披露', 'Not disclosed'],
   unknown: ['未知', 'Unknown'],
   none: ['无', 'None'],
+  placeholder: ['暂无', 'None yet'],
   seconds: ['{0} 秒', '{0} s'],
   milliseconds: ['{0} 毫秒', '{0} ms'],
 

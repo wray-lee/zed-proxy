@@ -122,12 +122,12 @@ function metricsBlock(): HTMLElement {
     metric(tr('metricActive', lang), active ?? tr('metricNoActive', lang), null),
     metric(
       tr('metricTokens', lang),
-      tokens === null ? '—' : `${tokens.valid} / ${tokens.total}`,
+      tokens === null ? tr('placeholder', lang) : `${tokens.valid} / ${tokens.total}`,
       checked ? tf('metricCheckedAt', lang, checked) : tr('metricNeverChecked', lang),
     ),
     metric(
       tr('metricProbes', lang),
-      probes === null ? '—' : `${probes.healthy} / ${probes.total}`,
+      probes === null ? tr('placeholder', lang) : `${probes.healthy} / ${probes.total}`,
       view.probe
         ? `${view.probe.report.model ?? view.probe.model} · ${effortLabel(view.probe.report.effort)}`
         : tr('metricNoProbe', lang),
