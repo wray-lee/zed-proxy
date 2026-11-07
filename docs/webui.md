@@ -57,11 +57,11 @@ Each page render is wrapped in its own guard. When one page throws, that page sh
 
 | Page | Hash | Contents |
 | --- | --- | --- |
-| Accounts | `#accounts` | Four header controls (probe model, refresh account status, refresh Orb balance, probe all), a cost banner, four metrics, the account list, add-account and the login panel; accounts are added through the paste login and switched between, never deleted or renamed, because the backend has no such endpoints |
+| Account pool | `#accounts` | Four header controls (probe model, refresh account status, refresh Orb balance, probe all), a cost banner, four metrics, the account list, add-account and the login panel; accounts are added through the paste login and switched between, never deleted or renamed, because the backend has no such endpoints |
 | Model list | `#models` | Catalogue refresh, an explainer banner, model rows (display name, id, provider, description, default and supported levels, context length, use-for-probe); entries that only the upstream `data[]` list carries come in as read-only rows marked "Upstream list only" |
 | Diagnostics | `#health` | Six read-only checks in a fixed order, per-row state, a summary with finish time, run again |
 | Routes | `#endpoints` | Three protocol entries and six static route groups (page and liveness, models and protocols, compatibility, accounts and quota, catalogue and identity, login), each row with method and whether a gateway key is needed; the page sends no requests |
-| Clients | `#integration` | Base-address notes and four copy-ready snippets (Codex, Claude Code, OpenCode, a shell request) |
+| Clients | `#integration` | Base-address notes and four copy-ready snippets (Codex, Claude Code, OpenCode, a shell request); the page itself sends no requests and reuses the session-wide catalogue read |
 
 The first three navigation entries form "Runtime", the last two "Developer tools". The current page is marked with `aria-current="page"` and an underline, not colour alone.
 
@@ -97,4 +97,4 @@ Snippets are built from runtime values: the base address comes from the page's p
 
 Page acceptance runs against a fake gateway (local, fixed fixtures, no real credentials) in a headless browser: Chinese and English screenshots of all five pages at desktop and phone widths, no horizontal overflow at narrow widths, 44 px target checks, a keyboard walk, Esc closing dialogs and returning focus, static waiting under reduced motion, storage-blocked degradation, single-page render-fault isolation, and the static fallback with scripts disabled. The run also covers state screenshots, focus rings, a 320 px page and 200 % zoom, an axe-core scan per page and a hand-checked contrast and focus-order log.
 
-The full set, including logs, lives in `F:\Projects\tmp\.scratch\zed-proxy\webui-check\rust-0.3.0-redesign\` and is not committed. Four captures from that set are committed for the README, straight copies with fake data and no real account: `docs/assets/webui-accounts.en.png`, `webui-accounts.zh.png`, `webui-health.en.png`, `webui-health.zh.png` (wide, 1440 px).
+The full set, including logs, lives in `F:\Projects\tmp\.scratch\zed-proxy\webui-check\rust-0.3.0-redesign\` and is not committed: 82 scripted interaction assertions, 12 axe scans with no violations, a 60-image screenshot inventory, the overlap tables against both reference trees, the component-contrast table and the old-copy comparison, all measured on the release commit with bundle sha256 `67c30077362d4bd3058b8fa89ef4ff0a8fcf877b40a018abd67b127e4ff8a1aa` (the acceptance matrix records the exact commit). Four captures from that set are committed for the README, straight copies with fake data and no real account: `docs/assets/webui-accounts.en.png`, `webui-accounts.zh.png`, `webui-health.en.png`, `webui-health.zh.png` (wide, 1440 px).

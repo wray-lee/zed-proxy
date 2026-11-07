@@ -99,7 +99,8 @@ provider 分发读取 Zed 目录中该模型的 `provider` 字段。只有目录
 1. `cd webui && npm ci && npx tsc --noEmit && npm run build` 先做类型检查，再写出单个 `webui/dist/index.html`，JavaScript 与 CSS 已内联。没有 `dist/assets/`，页面不引用任何外部域名，字体来自系统栈。
 2. `build.rs` 在 crate 编译前运行：把 `webui/dist/index.html` 登记为重建输入，文件缺失时直接 panic 并给出明确提示，所以不可能产出一个没有页面的二进制。
 3. `src/http/static.rs` 用 `include_bytes!` 在编译期嵌入该文件，由 `GET /` 以 `text/html; charset=utf-8` 返回，并带 `Cache-Control: no-store`。它的测试断言字节是完整 HTML 文档且包含五个页面容器（`page-accounts`、`page-models`、`page-health`、`page-endpoints`、`page-integration`），构建不完整的产物会让 `cargo test` 失败。
-4. 字节在编译期固定，改动面板必须依次重建产物与二进制；运行中的进程从不读取 `webui/`，也不需要它的写权限。页面只把三个键保存在浏览器一侧：`zed_lang`、`zed_api_key`、`zed_probe_model`。
+4. 字节在编译期固定，改动面板必须依次重建产物与二进制；运行中的进程从不读取 `webui/`，也不需要它的写权限。页面只把三个键保存在浏览器一侧：`zed_lang`、`zed_api_key`、`zed_probe_model`。产物是单个自包含文档：上面五个页面容器各一处、一个内联脚本与一份内联样式，没有外链资源，也不引用外部域名。
+5. 验收正是围绕这些性质做的：五个页面容器各出现一次、以 `file://` 打开可离线渲染、产物缺失时 `build.rs` 拒绝构建。验收日志与截图放在 `F:\Projects\tmp\.scratch\zed-proxy\webui-check\rust-0.3.0-redesign\`（仅证据，不提交）；0.3.0 的证据在发布提交上重测，产物 sha256 为 `67c30077362d4bd3058b8fa89ef4ff0a8fcf877b40a018abd67b127e4ff8a1aa`（确切提交见验收矩阵）。
 
 ## 数据文件
 

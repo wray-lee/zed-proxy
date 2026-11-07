@@ -61,8 +61,8 @@ HTTP contract is preserved; the changes below are the ones a user can notice.
   layout is new: a dark side rail with the service state and a numbered
   navigation, two core colours (paper and ink) plus one terracotta accent,
   serif headings over sans body text, hairline-separated rows instead of a card
-  grid, and a 4/8/12 px radius scale. The five pages are Accounts, Model
-  catalogue, Diagnostics, Routes and Clients; the browser's language is used
+  grid, and a 4/8/12 px radius scale. The five pages are Account pool, Model
+  list, Diagnostics, Routes and Clients; the browser's language is used
   unless `zed_lang` says otherwise, and the switch in the top bar changes the
   language in place on the current page.
 - Every page renders in its own guard with an error surface and a retry: one
@@ -129,6 +129,19 @@ HTTP contract is preserved; the changes below are the ones a user can notice.
 - `webui/src/theme.css` declares each recurring property once on the role that
   owns it (text, hairline frame, machine text) instead of repeating it inside
   every component rule.
+- Control and container boundaries use `#8a8375` (3.4:1 or better on paper and
+  on cards), so input, select, secondary-button and card edges clear the 3:1
+  component-contrast floor; the focus ring stays at 6.3:1.
+- Models that only the upstream `data[]` list carries are read-only rows marked
+  "Upstream list only" with no probe button, and the built-in-catalogue toast
+  reports the count of the list it is showing instead of the refresh response.
+- Login failures get one line per status class (409 no callback waiting, 410
+  expired, 500 not saved, 400 names the callback problem), and a rejected Orb
+  link spells out the accepted shape: https, `portal.withorb.com`, a non-empty
+  token parameter.
+- A probe that is cooling down shows the remaining seconds next to the probe
+  result, and an unanswered write tells the reader the result may still have
+  taken effect and points at "Refresh account status".
 
 ### Removed
 
