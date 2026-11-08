@@ -208,6 +208,13 @@ fn convert(map: &mut Map<String, Value>, context: &mut Context, depth: usize) {
     clean_required(map);
     clean_children(map, context, depth);
     ensure_items(map);
+    // Gemini rejects any node without a `type` ("didn't specify the schema type
+    // field"), including the typeless result of a dropped or const-only enum;
+    // only an `anyOf` node may omit it.
+    if !map.is_empty() && !map.contains_key("type") && !map.contains_key("anyOf") {
+        let inferred = infer_type(map);
+        map.insert("type".to_string(), Value::String(inferred));
+    }
     map.retain(|key, _| ALLOWED_KEYS.contains(&key.as_str()));
 }
 
@@ -537,7 +544,7 @@ mod tests {
     fn conversion_table_from_the_spec() {
         assert_eq!(
             rendered(serde_json::json!({"const": "a"})),
-            r#"{"enum":["a"]}"#
+            r#"{"type":"string","enum":["a"]}"#
         );
         assert_eq!(
             rendered(serde_json::json!({"oneOf": [{"type": "string"}, {"type": "integer"}]})),
@@ -589,7 +596,7 @@ mod tests {
         // survive in `description` instead.
         assert_eq!(
             rendered(serde_json::json!({"enum": [1, true]})),
-            r#"{"description":"Allowed values: 1, true"}"#
+            r#"{"type":"string","description":"Allowed values: 1, true"}"#
         );
         assert_eq!(
             rendered(serde_json::json!({"enum": [1, true], "type": "integer"})),
@@ -606,7 +613,7 @@ mod tests {
         );
         assert_eq!(
             rendered(serde_json::json!({"allOf": [{"type": "string"}], "description": "x"})),
-            r#"{"description":"x"}"#
+            r#"{"type":"string","description":"x"}"#
         );
     }
 
@@ -722,11 +729,11 @@ mod tests {
         assert_eq!(rendered(serde_json::json!({"const": ""})), r#"{}"#);
         assert_eq!(
             rendered(serde_json::json!({"const": "a"})),
-            r#"{"enum":["a"]}"#
+            r#"{"type":"string","enum":["a"]}"#
         );
         assert_eq!(
             rendered(serde_json::json!({"const": 1})),
-            r#"{"description":"Allowed values: 1"}"#
+            r#"{"type":"string","description":"Allowed values: 1"}"#
         );
         assert_eq!(
             rendered(serde_json::json!({"type": "string", "const": ""})),
@@ -745,7 +752,7 @@ mod tests {
         // Existing keys survive the patch-up.
         assert_eq!(
             rendered(serde_json::json!({"type": "array", "items": {"description": "note"}})),
-            r#"{"type":"array","items":{"type":"object","description":"note","properties":{}}}"#
+            r#"{"type":"array","items":{"type":"string","description":"note"}}"#
         );
         for invalid in [
             serde_json::json!(true),
@@ -776,7 +783,7 @@ mod tests {
         // Items that lose their enum still receive the loose object shape.
         assert_eq!(
             rendered(serde_json::json!({"type": "array", "items": {"enum": [1, 2]}})),
-            r#"{"type":"array","items":{"type":"object","description":"Allowed values: 1, 2","properties":{}}}"#
+            r#"{"type":"array","items":{"type":"string","description":"Allowed values: 1, 2"}}"#
         );
         // Exact fixture from spec 22 §6.4.2: a nested bare array under `properties`.
         assert_eq!(
