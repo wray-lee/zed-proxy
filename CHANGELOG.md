@@ -5,7 +5,7 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog v1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2026-11-05
+## [0.3.0] - 2026-11-08
 
 The Zig implementation is replaced by a clean-room Rust rewrite. The public
 HTTP contract is preserved; the changes below are the ones a user can notice.
