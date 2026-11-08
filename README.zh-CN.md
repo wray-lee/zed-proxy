@@ -118,8 +118,8 @@ cargo build --release          # target/release/zed-proxy
 
 ## 致谢
 
-- [csmsqj/zed-api](https://github.com/csmsqj/zed-api) 是本项目的基础。该项目为 MIT 许可，其版权声明保留在 [LICENSE](LICENSE) 中。
+- [csmsqj/zed-api](https://github.com/csmsqj/zed-api) 是本项目的起点，示范了 Zed 端点的调用方式。自 0.3.0 起网关是用 Rust 净室重写的，不含其代码。0.3.0 之前的版本由它衍生，其 MIT 版权声明保留在这些版本的 git 历史中。
 
 ## 许可证
 
-MIT，见 [LICENSE](LICENSE)。原始版权归 csmsqj；修改部分版权 2026 wray-lee。欢迎贡献，见 [CONTRIBUTING.md](CONTRIBUTING.md)；安全问题按 [SECURITY.md](SECURITY.md) 报告。
+MIT，见 [LICENSE](LICENSE)。欢迎贡献，见 [CONTRIBUTING.md](CONTRIBUTING.md)；安全问题按 [SECURITY.md](SECURITY.md) 报告。

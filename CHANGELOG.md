@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 The Zig implementation is replaced by a clean-room Rust rewrite. The public
 HTTP contract is preserved; the changes below are the ones a user can notice.
 
+The Rust code and the rebuilt WebUI share no code with csmsqj/zed-api (whole-tree
+line overlap 0.4%, protocol boilerplate excluded), so the licence now carries
+only the project's own copyright; csmsqj/zed-api stays credited in the README.
+
 ### Added
 
 - `/v1/models` entries now carry `context_length`, `max_output_tokens` and

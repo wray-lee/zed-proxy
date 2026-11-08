@@ -118,8 +118,8 @@ Streaming and non-streaming are supported on all three, and each route can route
 
 ## Acknowledgements
 
-- [csmsqj/zed-api](https://github.com/csmsqj/zed-api) is the base this project was derived from. It is MIT licensed, and its copyright notice is retained in [LICENSE](LICENSE).
+- [csmsqj/zed-api](https://github.com/csmsqj/zed-api) was the starting point of this project and showed how Zed's endpoints are called. From 0.3.0 the gateway is a clean-room rewrite in Rust and contains none of its code. Releases before 0.3.0 were derived from it and carry its MIT copyright notice in their git history.
 
 ## License
 
-MIT, see [LICENSE](LICENSE). The original copyright belongs to csmsqj; modifications are copyright 2026 wray-lee. Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md); security reports go through [SECURITY.md](SECURITY.md).
+MIT, see [LICENSE](LICENSE). Contributions are welcome, see [CONTRIBUTING.md](CONTRIBUTING.md); security reports go through [SECURITY.md](SECURITY.md).
