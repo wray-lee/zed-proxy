@@ -175,7 +175,7 @@ impl ProviderEncoder for GoogleProvider {
             if cleaned.is_empty() || !cleaned.starts_with('{') {
                 continue;
             }
-            let Ok(value) = serde_json::from_str::<Value>(cleaned) else {
+            let Some(value) = parse_event_line(cleaned) else {
                 continue;
             };
             if super::is_stream_ended(&value) {
@@ -272,6 +272,16 @@ impl ProviderEncoder for GoogleProvider {
 
     fn stream_decoder(&self) -> Box<dyn StreamDecoder> {
         Box::new(GoogleStreamDecoder::with_custom_tools(self.custom_names()))
+    }
+}
+
+/// Zed wraps every Gemini line as `{"event":{…}}`; bare lines are accepted too.
+/// Status lines (`stream_ended`, `failed`) never carry an `event` key.
+fn parse_event_line(cleaned: &str) -> Option<Value> {
+    let value = serde_json::from_str::<Value>(cleaned).ok()?;
+    match value.get("event").filter(|event| event.is_object()) {
+        Some(event) => Some(event.clone()),
+        None => Some(value),
     }
 }
 
@@ -861,7 +871,7 @@ impl StreamDecoder for GoogleStreamDecoder {
         if cleaned.is_empty() || !cleaned.starts_with('{') {
             return Ok(Vec::new());
         }
-        let Ok(value) = serde_json::from_str::<Value>(cleaned) else {
+        let Some(value) = parse_event_line(cleaned) else {
             return Ok(Vec::new());
         };
         if super::is_stream_ended(&value) {
@@ -1745,6 +1755,37 @@ mod tests {
 
     fn decode(body: &str) -> NeutralResponse {
         GoogleProvider.decode_response(body.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn lines_wrapped_in_an_event_object_decode_like_bare_ones() {
+        // Shape captured from Zed's real Google route.
+        let body = concat!(
+            r#"{"event":{"candidates":[{"content":{"parts":[{"text":"OK"}],"role":"model"}}],"usageMetadata":{}}}"#,
+            "
+",
+            r#"{"event":{"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"sig"}],"role":"model"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":1,"totalTokenCount":93}}}"#,
+            "
+",
+            r#"{"status":"stream_ended"}"#,
+            "
+"
+        );
+        let response = decode(body);
+        assert_eq!(response.text, "OK");
+        assert_eq!(response.stop_reason, StopReason::Stop);
+        assert_eq!(response.usage.input_tokens, 7);
+
+        let mut decoder = GoogleProvider.stream_decoder();
+        let mut text = String::new();
+        for line in body.lines() {
+            for event in decoder.push_line(line).unwrap() {
+                if let StreamEvent::TextDelta { delta } = event {
+                    text.push_str(&delta);
+                }
+            }
+        }
+        assert_eq!(text, "OK");
     }
 
     #[test]
