@@ -2100,8 +2100,9 @@ mod tests {
             messages: vec![message(Role::Assistant, vec![ContentBlock::ToolUse(call)])],
             ..request
         };
-        assert!(encode(&unsigned)
-            .contains(r#""thoughtSignature":"skip_thought_signature_validator""#));
+        assert!(
+            encode(&unsigned).contains(r#""thoughtSignature":"skip_thought_signature_validator""#)
+        );
     }
 
     #[test]
