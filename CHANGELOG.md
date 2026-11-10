@@ -5,6 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog v1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-11-10
+
+### Fixed
+
+- A Gemini turn replayed from history with tool calls that carry no
+  `thoughtSignature` is now accepted instead of rejected with
+  `400 Function call is missing a thought_signature in functionCall parts
+  (call \`…\`, position N)`. The upstream requires the signature on every
+  `functionCall` part of a replayed turn, including the parallel calls after the
+  first, and clients that do not understand the extension key drop it. Missing
+  signatures are now filled with Google's documented
+  `skip_thought_signature_validator` bypass value; a real signature is still
+  passed through byte for byte. Verified against `cloud.zed.dev`:
+  unsigned replay 400 → sentinel replay 200.
+
 ## [0.3.0] - 2026-11-08
 
 The Zig implementation is replaced by a clean-room Rust rewrite. The public
