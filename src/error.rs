@@ -3,6 +3,11 @@
 
 use std::fmt::Write as _;
 
+/// `GatewayError::code` of a turn the model aborted itself (Gemini
+/// `MALFORMED_FUNCTION_CALL` and friends): retried in place, never charged to
+/// the account.
+pub const MODEL_ABORTED: &str = "model_aborted";
+
 /// Coarse failure class. The whole retry / cooldown / failover decision is
 /// driven by this enum (spec 30 §2, §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

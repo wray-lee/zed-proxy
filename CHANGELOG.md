@@ -5,6 +5,26 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog v1.1.0](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-11-10
+
+### Fixed
+
+- A Gemini turn that the model aborts itself (`finishReason`
+  `MALFORMED_FUNCTION_CALL`, `MALFORMED_RESPONSE` or `UNEXPECTED_TOOL_CALL`,
+  about 3 to 5% of turns on `gemini-3.1-pro-preview` in a real-account sample)
+  is now retried up to twice on the same account before it is reported, instead
+  of surfacing as `upstream finishReason MALFORMED_FUNCTION_CALL` to the client.
+  The abort is not charged to the account, so it no longer starts a cooldown.
+- To make the retry possible on streams, a Gemini stream that has produced only
+  reasoning text no longer commits the response: the thoughts are held back
+  and sent together with the first visible text or tool call. Reasoning now
+  appears slightly later on the client, never lost. `MALFORMED_RESPONSE` was
+  previously not recognised as an abort at all.
+- When the model aborts after it has already produced complete tool calls (a
+  Gemini 3.1 Pro habit seen mid-stream), those calls are delivered and the turn
+  ends as `tool_calls` instead of the whole turn failing; only the aborted tail
+  is dropped.
+
 ## [0.3.1] - 2026-11-10
 
 ### Fixed

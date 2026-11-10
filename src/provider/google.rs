@@ -247,11 +247,8 @@ impl ProviderEncoder for GoogleProvider {
             ));
         }
         if let Some(reason) = finish.as_deref() {
-            if is_fatal_finish(reason) {
-                return Err(GatewayError::transient(
-                    None,
-                    format!("upstream finishReason {reason}"),
-                ));
+            if is_fatal_finish(reason) && tool_calls.is_empty() {
+                return Err(model_aborted(reason));
             }
         }
         // A prompt that never produced a candidate is a content filter, with the
@@ -771,6 +768,37 @@ fn usage_from(value: &Value) -> Option<Usage> {
     })
 }
 
+/// A line whose only content is reasoning (or an empty signature carrier) and
+/// that does not finish the turn.
+fn thought_only(value: &Value) -> bool {
+    let Some(candidate) = value
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|candidates| candidates.first())
+    else {
+        return false;
+    };
+    if candidate.get("finishReason").is_some() {
+        return false;
+    }
+    let Some(parts) = candidate
+        .get("content")
+        .and_then(|content| content.get("parts"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    !parts.is_empty()
+        && parts.iter().all(|part| {
+            part.get("functionCall").is_none()
+                && part.get("inlineData").is_none()
+                && match part.get("text").and_then(Value::as_str) {
+                    Some("") | None => true,
+                    Some(_) => part.get("thought").and_then(Value::as_bool) == Some(true),
+                }
+        })
+}
+
 fn prompt_block(value: &Value) -> Option<String> {
     value
         .get("promptFeedback")?
@@ -780,7 +808,18 @@ fn prompt_block(value: &Value) -> Option<String> {
 }
 
 fn is_fatal_finish(reason: &str) -> bool {
-    matches!(reason, "MALFORMED_FUNCTION_CALL" | "UNEXPECTED_TOOL_CALL")
+    matches!(
+        reason,
+        "MALFORMED_FUNCTION_CALL" | "MALFORMED_RESPONSE" | "UNEXPECTED_TOOL_CALL"
+    )
+}
+
+/// The model aborted its own turn; the account is fine and a retry usually
+/// succeeds, so callers key off the code instead of benching the account.
+fn model_aborted(reason: &str) -> GatewayError {
+    let mut err = GatewayError::transient(None, format!("upstream finishReason {reason}"));
+    err.code = Some(crate::error::MODEL_ABORTED);
+    err
 }
 
 fn map_finish(reason: Option<&str>, has_tools: bool) -> StopReason {
@@ -798,7 +837,17 @@ fn map_finish(reason: Option<&str>, has_tools: bool) -> StopReason {
         | Some("BLOCKLIST")
         | Some("PROHIBITED_CONTENT")
         | Some("SPII") => StopReason::ContentFilter,
-        Some("MALFORMED_FUNCTION_CALL") | Some("UNEXPECTED_TOOL_CALL") => StopReason::Unknown,
+        // Calls that already completed are valid; only the aborted tail is lost
+        // (a turn with none of them never gets here, see `is_fatal_finish`).
+        Some("MALFORMED_FUNCTION_CALL")
+        | Some("MALFORMED_RESPONSE")
+        | Some("UNEXPECTED_TOOL_CALL") => {
+            if has_tools {
+                StopReason::ToolCalls
+            } else {
+                StopReason::Unknown
+            }
+        }
         _ => {
             if has_tools {
                 StopReason::ToolCalls
@@ -908,8 +957,13 @@ impl StreamDecoder for GoogleStreamDecoder {
             self.blocked = Some(reason);
         }
         // A line that parses but carries no candidate still counts as a model
-        // event: the stream is not "empty" (spec 22 §9.1).
-        self.saw_model_event = true;
+        // event: the stream is not "empty" (spec 22 §9.1). Thought-only lines do
+        // not: the model can still abort the turn after thinking, and the client
+        // is only committed once there is visible output to protect (the held
+        // thoughts are flushed with it).
+        if !thought_only(&value) {
+            self.saw_model_event = true;
+        }
         if !self.started {
             self.started = true;
             events.push(StreamEvent::Start { id: None });
@@ -923,6 +977,11 @@ impl StreamDecoder for GoogleStreamDecoder {
         };
         if let Some(reason) = candidate.get("finishReason").and_then(Value::as_str) {
             self.finish = Some(reason.to_string());
+            if is_fatal_finish(reason) && self.tool_calls == 0 {
+                let err = model_aborted(reason);
+                self.failure = Some(err.clone());
+                return Err(err);
+            }
         }
         let Some(parts) = candidate
             .get("content")
@@ -1002,8 +1061,8 @@ impl StreamDecoder for GoogleStreamDecoder {
             map_finish(self.finish.as_deref(), self.tool_calls > 0)
         };
         if let Some(reason) = self.finish.as_deref() {
-            if is_fatal_finish(reason) {
-                let err = GatewayError::transient(None, format!("upstream finishReason {reason}"));
+            if is_fatal_finish(reason) && self.tool_calls == 0 {
+                let err = model_aborted(reason);
                 self.failure = Some(err.clone());
                 return Err(err);
             }
@@ -1891,6 +1950,58 @@ mod tests {
         let body =
             r#"{"candidates":[{"content":{"parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}]}"#;
         assert!(GoogleProvider.decode_response(body.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn stream_thinking_does_not_commit_and_an_abort_fails_on_its_own_line() {
+        let mut decoder = GoogleStreamDecoder::default();
+        decoder
+            .push_line(r#"{"event":{"candidates":[{"content":{"parts":[{"text":"hm","thought":true}]}}]}}"#)
+            .unwrap();
+        decoder
+            .push_line(r#"{"event":{"candidates":[{"content":{"parts":[{"text":"","thoughtSignature":"s"}]}}]}}"#)
+            .unwrap();
+        assert!(!decoder.saw_model_event());
+        let err = decoder
+            .push_line(r#"{"event":{"candidates":[{"content":{"parts":[]},"finishReason":"MALFORMED_RESPONSE"}]}}"#)
+            .unwrap_err();
+        assert_eq!(err.code, Some(crate::error::MODEL_ABORTED));
+        assert!(decoder.failure().is_some());
+    }
+
+    #[test]
+    fn an_abort_after_complete_tool_calls_keeps_them_and_ends_as_tool_calls() {
+        let call = r#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"Glob","args":{"path":"*.toml"}}}]}}]}"#;
+        let abort =
+            r#"{"candidates":[{"content":{"parts":[]},"finishReason":"MALFORMED_FUNCTION_CALL"}]}"#;
+        let mut decoder = GoogleStreamDecoder::default();
+        decoder.push_line(call).unwrap();
+        decoder.push_line(abort).unwrap();
+        let events = decoder.finish().unwrap();
+        assert!(events.contains(&StreamEvent::End {
+            reason: StopReason::ToolCalls
+        }));
+        assert!(decoder.failure().is_none());
+
+        let body = format!(
+            "{call}
+{abort}"
+        );
+        let reduced = GoogleProvider.decode_response(body.as_bytes()).unwrap();
+        assert_eq!(reduced.tool_calls.len(), 1);
+        assert_eq!(reduced.stop_reason, StopReason::ToolCalls);
+    }
+
+    #[test]
+    fn stream_text_commits_even_after_thinking() {
+        let mut decoder = GoogleStreamDecoder::default();
+        decoder
+            .push_line(r#"{"candidates":[{"content":{"parts":[{"text":"hm","thought":true}]}}]}"#)
+            .unwrap();
+        decoder
+            .push_line(r#"{"candidates":[{"content":{"parts":[{"text":"hi"}]}}]}"#)
+            .unwrap();
+        assert!(decoder.saw_model_event());
     }
 
     #[test]

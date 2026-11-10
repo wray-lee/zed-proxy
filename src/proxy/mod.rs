@@ -20,7 +20,7 @@ use futures_util::StreamExt;
 use crate::accounts::{AccountSnapshot, AccountStore};
 use crate::catalog::{CatalogHandle, ModelCapabilities, Provider};
 use crate::client::{ClientEncoder, ClientProtocol};
-use crate::error::{ErrorKind, GatewayError};
+use crate::error::{ErrorKind, GatewayError, MODEL_ABORTED};
 use crate::neutral::{NeutralRequest, StreamEvent};
 use crate::provider::{build_envelope, ProviderEncoder, StreamDecoder};
 use crate::upstream::client::{
@@ -44,6 +44,9 @@ pub struct ProxyOutcome {
     pub content_type: &'static str,
     pub body: Vec<u8>,
 }
+
+/// Extra tries on the same account after the model aborts its own turn.
+const MODEL_ABORT_RETRIES: u32 = 2;
 
 /// Non-streaming proxy request (spec 30 §5).
 pub async fn handle_non_stream(
@@ -109,6 +112,7 @@ pub async fn handle_stream(
             .encoder
             .encode_request(&prepared.request, &prepared.capabilities)?;
         let mut empty_retries = 0u32;
+        let mut abort_retries = 0u32;
         loop {
             let envelope = build_envelope(prepared.provider, &prepared.model, &provider_request)?;
             let request = completions_request(&envelope, &token, true);
@@ -163,6 +167,14 @@ pub async fn handle_stream(
                 PreRead::Failed(err) => {
                     if err.kind == ErrorKind::Request {
                         return Err(err);
+                    }
+                    if err.code == Some(MODEL_ABORTED) {
+                        if abort_retries < MODEL_ABORT_RETRIES {
+                            abort_retries += 1;
+                            continue;
+                        }
+                        last = Some(err);
+                        break;
                     }
                     charge_failure(services, &account, &err);
                     last = Some(err);
@@ -316,7 +328,9 @@ async fn run_account(
                     attempt += 1;
                     continue;
                 }
-                charge_failure(services, account, &err);
+                if err.code != Some(MODEL_ABORTED) {
+                    charge_failure(services, account, &err);
+                }
                 return Err(err);
             }
         };
@@ -1319,6 +1333,56 @@ mod tests {
                 .any(|body| body.contains("\"provider\":\"google\"")),
             "{bodies:?}"
         );
+    }
+
+    const THOUGHT_LINE: &str = "{\"event\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hm\",\"thought\":true}],\"role\":\"model\"}}]}}
+";
+    const ABORT_LINE: &str = "{\"event\":{\"candidates\":[{\"content\":{\"parts\":[],\"role\":\"model\"},\"finishReason\":\"MALFORMED_FUNCTION_CALL\"}]}}
+{\"status\":\"stream_ended\"}
+";
+    const GOOD_LINE: &str = "{\"event\":{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"OK\"}],\"role\":\"model\"},\"finishReason\":\"STOP\"}]}}
+{\"status\":\"stream_ended\"}
+";
+
+    #[tokio::test]
+    async fn a_model_abort_after_thinking_is_retried_before_the_client_is_committed() {
+        let upstream = FakeUpstream::new();
+        upstream.push_stream(200, vec![THOUGHT_LINE, ABORT_LINE]);
+        upstream.push_stream(200, vec![THOUGHT_LINE, GOOD_LINE]);
+        let (services, _dir) = services(&upstream, &["a"]);
+        let stream = handle_stream(
+            &services,
+            ClientProtocol::ChatCompletions,
+            &stream_body("gemini-4-argon"),
+        )
+        .await
+        .unwrap();
+        let text = drain(stream).await;
+        assert!(text.contains("\"content\":\"OK\""), "{text}");
+        assert!(!text.contains("MALFORMED"), "{text}");
+        assert_eq!(upstream.calls(), 2);
+        // The model's slip is not the account's fault.
+        assert_eq!(services.accounts.snapshot("a").unwrap().disabled_until, 0);
+    }
+
+    #[tokio::test]
+    async fn repeated_model_aborts_fail_without_benching_the_account() {
+        let upstream = FakeUpstream::new();
+        for _ in 0..=MODEL_ABORT_RETRIES {
+            upstream.push_stream(200, vec![THOUGHT_LINE, ABORT_LINE]);
+        }
+        let (services, _dir) = services(&upstream, &["a"]);
+        let err = handle_stream(
+            &services,
+            ClientProtocol::ChatCompletions,
+            &stream_body("gemini-4-argon"),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(err.message.contains("MALFORMED_FUNCTION_CALL"), "{err:?}");
+        assert_eq!(upstream.calls(), 1 + MODEL_ABORT_RETRIES as usize);
+        assert_eq!(services.accounts.snapshot("a").unwrap().disabled_until, 0);
     }
 
     #[tokio::test]
