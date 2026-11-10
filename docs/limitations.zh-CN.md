@@ -8,8 +8,8 @@
 - 真实 Zed 登录回调与真实 `gemini-4-argon` 调用未经真实账号验证，此前所有测试与探测都使用构造凭据或本地假数据。
 - arm64 镜像只在 QEMU 下构建并启动，未在真实 arm64 硬件上运行。
 - `ZED_UPSTREAM_BASE` 用于把代理指向假上游做差分验证。它只对本地假上游用过；真实 `cloud.zed.dev` 配自定义前缀时的行为未经验证。
-- Rust 重写的真实上游验证仍待完成。0.3.0 的行为是对本地假上游与 0.2.2 差分基线验证的，未用真实账号对 `cloud.zed.dev` 验证。
-- Gemini 工具调用未经真实上游验证：schema 清洗、工具调用往返、输出上限（现在会按目录上限下发 `generationConfig.maxOutputTokens`，尚无真实调用确认上游接受该值）、`inlineData` 图片、`toolConfig`/`functionCallingConfig` 以及 `thoughtSignature` 透传都属于这一类。
+- 0.3.1 已用真实账号对 `cloud.zed.dev` 跑过：三种 provider 分别走三种客户端协议、工具往返与并行工具调用、`apply_patch` 自定义工具，以及 Gemini 的 thoughtSignature 回放（见 CHANGELOG 0.3.1）。下面列的是真实账号仍无法确认的部分。
+- Gemini 工具调用已对真实上游验证：schema 清洗、三种客户端协议的工具往返、并行调用、`thoughtSignature` 回放。仍未验证：`inlineData` 图片、`toolConfig`/`functionCallingConfig`，以及上游是否接受代理下发的 `generationConfig.maxOutputTokens`。
 - OpenAI provider 的输出预算按目录上限截断（例如 999999 会变成 128000）。只有本地假上游接受或拒绝过这一行为；Zed 真实上游是否同样截断未经验证。
 - Gemini 的 `systemInstruction` 映射与 `thinkingLevel` 映射只有本地测试覆盖。
 - 发往 Gemini 模型的 `/v1/responses` 已实现，但转换矩阵中每个相关格子都只对假上游验证过。
