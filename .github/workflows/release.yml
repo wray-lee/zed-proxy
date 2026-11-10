@@ -56,7 +56,7 @@ jobs:
           TAG: ${{ github.ref_name }}
         run: |
           version="${TAG#v}"
-          awk -v start="## [$version]" 'index($0, start) == 1 {on = 1; next} on && /^## \x5b/ {exit} on' CHANGELOG.md \
+          awk -v start="## [$version]" 'index($0, start) == 1 {on = 1; next} on && index($0, "## [") == 1 {exit} on' CHANGELOG.md \
             | sed -e '1{/^$/d}' > notes.md
           test -s notes.md || { echo "CHANGELOG.md has no section for $version" >&2; exit 1; }
           gh release create "$TAG" --title "zed-proxy $version" --notes-file notes.md --verify-tag
